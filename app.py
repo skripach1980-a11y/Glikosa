@@ -2,7 +2,6 @@ from flask import Flask, render_template, request, jsonify, send_file
 import sqlite3
 import os
 from datetime import datetime, timedelta
-from weasyprint import HTML
 import io
 import matplotlib.pyplot as plt
 import matplotlib
@@ -96,8 +95,8 @@ def get_measurements():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/generate_pdf')
-def generate_pdf():
+@app.route('/generate_report')
+def generate_report():
     try:
         conn = sqlite3.connect('glucose.db')
         c = conn.cursor()
@@ -128,77 +127,70 @@ def generate_pdf():
         if not measurements:
             return "Нет данных за последний месяц", 404
         
-        min_glucose = min(glucose_values) if glucose_values else 0
-        max_glucose = max(glucose_values) if glucose_values else 0
-        
-        html_content = generate_pdf_html(measurements, min_glucose, max_glucose)
-        pdf = HTML(string=html_content).write_pdf()
+        html_content = generate_report_html(measurements, glucose_values)
         
         return send_file(
-            io.BytesIO(pdf),
+            io.BytesIO(html_content.encode('utf-8')),
             as_attachment=True,
-            download_name=f'glucose_report_{datetime.now().strftime("%Y-%m-%d")}.pdf',
-            mimetype='application/pdf'
+            download_name=f'glucose_report_{datetime.now().strftime("%Y-%m-%d")}.html',
+            mimetype='text/html'
         )
         
     except Exception as e:
-        return f"Ошибка генерации PDF: {str(e)}", 500
+        return f"Ошибка генерации отчета: {str(e)}", 500
 
-def generate_pdf_html(measurements, min_glucose, max_glucose):
-    html_template = f"""
+def generate_report_html(measurements, glucose_values):
+    min_glucose = min(glucose_values) if glucose_values else 0
+    max_glucose = max(glucose_values) if glucose_values else 0
+    avg_glucose = sum(glucose_values) / len(glucose_values) if glucose_values else 0
+    
+    chart_image = create_chart_image(measurements)
+    chart_base64 = base64.b64encode(chart_image).decode('utf-8') if chart_image else ''
+    
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
+        <title>Отчет по глюкозе</title>
         <style>
-            body {{
-                font-family: Arial, sans-serif;
-                margin: 20px;
-                color: #333;
-            }}
-            .header {{
-                text-align: center;
-                margin-bottom: 30px;
-                border-bottom: 2px solid #007cba;
-                padding-bottom: 20px;
-            }}
-            .title {{
-                font-size: 24px;
-                font-weight: bold;
-                color: #2c3e50;
-            }}
-            .table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 20px 0;
-            }}
-            .table th {{
-                background-color: #007cba;
-                color: white;
-                padding: 12px;
-                text-align: left;
-            }}
-            .table td {{
-                padding: 10px;
-                border-bottom: 1px solid #ddd;
-            }}
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .header {{ text-align: center; border-bottom: 2px solid #007cba; padding-bottom: 20px; }}
+            .stats {{ background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #007cba; color: white; }}
             .min-value {{ color: green; font-weight: bold; }}
             .max-value {{ color: red; font-weight: bold; }}
-            .footer {{
-                margin-top: 30px;
-                text-align: center;
-                font-size: 12px;
-                color: #666;
-            }}
+            .chart {{ text-align: center; margin: 30px 0; }}
         </style>
     </head>
     <body>
         <div class="header">
-            <div class="title">ОТЧЕТ ПО УРОВНЮ ГЛЮКОЗЫ</div>
-            <div>Период: последние 30 дней | Сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}</div>
+            <h1>📊 Отчет по уровню глюкозы</h1>
+            <p>Период: последние 30 дней | Сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}</p>
         </div>
         
-        <table class="table">
+        <div class="stats">
+            <h3>📈 Статистика</h3>
+            <p><strong>Всего измерений:</strong> {len(measurements)}</p>
+            <p><strong>Средний уровень:</strong> {avg_glucose:.1f} mmol/L</p>
+            <p><strong>Минимальный уровень:</strong> <span class="min-value">{min_glucose} mmol/L</span></p>
+            <p><strong>Максимальный уровень:</strong> <span class="max-value">{max_glucose} mmol/L</span></p>
+        </div>
+    """
+    
+    if chart_base64:
+        html += f"""
+        <div class="chart">
+            <h3>📉 Динамика уровня глюкозы</h3>
+            <img src="data:image/png;base64,{chart_base64}" alt="График глюкозы" style="max-width: 100%;">
+        </div>
+        """
+    
+    html += """
+        <h3>📋 Детальные измерения</h3>
+        <table>
             <thead>
                 <tr>
                     <th>Дата</th>
@@ -217,7 +209,7 @@ def generate_pdf_html(measurements, min_glucose, max_glucose):
         elif m['value'] == max_glucose:
             value_class = "max-value"
             
-        html_template += f"""
+        html += f"""
                 <tr>
                     <td>{m['date']}</td>
                     <td>{m['time']}</td>
@@ -226,23 +218,56 @@ def generate_pdf_html(measurements, min_glucose, max_glucose):
                 </tr>
         """
     
-    html_template += f"""
+    html += """
             </tbody>
         </table>
-        
-        <div class="footer">
-            Всего измерений: {len(measurements)} | 
-            Минимум: {min_glucose} mmol/L | 
-            Максимум: {max_glucose} mmol/L
-        </div>
     </body>
     </html>
     """
     
-    return html_template
+    return html
 
-# Инициализация БД при запуске
-init_db()
+def create_chart_image(measurements):
+    try:
+        if not measurements:
+            return None
+            
+        recent_measurements = measurements[:20]
+        dates = [f"{m['date']}\n{m['time']}" for m in recent_measurements]
+        glucose_values = [m['value'] for m in recent_measurements]
+        
+        plt.figure(figsize=(12, 6))
+        plt.plot(glucose_values, marker='o', linewidth=2, markersize=4, color='#2c3e50')
+        
+        if glucose_values:
+            min_val = min(glucose_values)
+            max_val = max(glucose_values)
+            min_idx = glucose_values.index(min_val)
+            max_idx = glucose_values.index(max_val)
+            
+            plt.plot(min_idx, min_val, 'go', markersize=8, label='Min')
+            plt.plot(max_idx, max_val, 'ro', markersize=8, label='Max')
+        
+        plt.title('Динамика уровня глюкозы', fontsize=16, fontweight='bold')
+        plt.xlabel('Измерения')
+        plt.ylabel('Глюкоза (mmol/L)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.xticks(range(len(dates)), dates, rotation=45)
+        plt.tight_layout()
+        
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        img_buffer.seek(0)
+        return img_buffer.getvalue()
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания графика: {str(e)}")
+        return None
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    init_db()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
