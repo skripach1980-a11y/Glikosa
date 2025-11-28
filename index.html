@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Цвет адресной строки в Chrome -->
+    <meta name="theme-color" content="#1a1a2e">
+    <!-- Цвет статус бара в iOS -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Глюкоза</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
+            /* Для окрашивания нижней панели Honor/Huawei */
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 8px 15px 15px 15px; /* Уменьшил верхний padding с 15px до 8px */
+            position: relative;
+            /* Учитываем безопасную зону снизу */
+            padding-bottom: calc(15px + env(safe-area-inset-bottom));
+            /* Сдвигаем весь контент вверх */
+            transform: translateY(-10px);
+        }
+
+        .header {
+            text-align: center;
+            padding: 5px 0 15px 0; /* Уменьшил отступы */
+            position: relative;
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #4cc9f0;
+            line-height: 1.3;
+        }
+
+        .settings-btn {
+            position: absolute;
+            right: 10px;
+            top: 5px; /* Поднял шестеренку */
+            background: #4cc9f0;
+            border: none;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .display {
+            background: #2d2d44;
+            border: 2px solid #4cc9f0;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 0 0 12px 0; /* Уменьшил отступ снизу */
+            text-align: center;
+        }
+
+        .value {
+            font-size: 58px;
+            font-weight: 300;
+            color: #ffffff;
+            height: 65px;
+            line-height: 65px;
+        }
+
+        .value.sent {
+            font-size: 42px;
+            font-weight: 500;
+        }
+
+        .keyboard {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 0 0 12px 0; /* Уменьшил отступ снизу */
+        }
+
+        .key {
+            background: #2d2d44;
+            border: 2px solid #4cc9f0;
+            border-radius: 12px;
+            color: #fff;
+            font-size: 20px;
+            height: 55px;
+            cursor: pointer;
+        }
+
+        .key:active {
+            background: #4cc9f0;
+        }
+
+        .key.clear {
+            border-color: #ff6b6b;
+        }
+
+        .key.clear:active {
+            background: #ff6b6b;
+        }
+
+        .key.comma {
+            font-size: 24px;
+        }
+
+        .pressure-section {
+            margin: 0 0 12px 0; /* Уменьшил отступ снизу */
+        }
+
+        .pressure-title {
+            text-align: center;
+            font-size: 16px;
+            color: #4cc9f0;
+            margin-bottom: 8px; /* Уменьшил отступ */
+        }
+
+        .pressure-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .pressure-btn {
+            background: #2d2d44;
+            border: 2px solid #4cc9f0;
+            border-radius: 10px;
+            color: #fff;
+            padding: 12px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .pressure-btn.active {
+            background: #4cc9f0;
+            font-weight: bold;
+        }
+
+        /* Дополнительная область для окрашивания нижней панели */
+        .bottom-safe-area {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: env(safe-area-inset-bottom);
+            background: #1a1a2e;
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">Добрый день,<br>Анатолий Иванович</div>
+            <button class="settings-btn" onclick="goToAnalytics()">⚙</button>
+        </div>
+
+        <div class="display">
+            <div id="valueDisplay" class="value">0.0</div>
+        </div>
+
+        <div class="keyboard">
+            <button class="key" onclick="handleKeyClick('1')">1</button>
+            <button class="key" onclick="handleKeyClick('2')">2</button>
+            <button class="key" onclick="handleKeyClick('3')">3</button>
+            <button class="key" onclick="handleKeyClick('4')">4</button>
+            <button class="key" onclick="handleKeyClick('5')">5</button>
+            <button class="key" onclick="handleKeyClick('6')">6</button>
+            <button class="key" onclick="handleKeyClick('7')">7</button>
+            <button class="key" onclick="handleKeyClick('8')">8</button>
+            <button class="key" onclick="handleKeyClick('9')">9</button>
+            <button class="key comma" onclick="handleKeyClick('.')">,</button>
+            <button class="key" onclick="handleKeyClick('0')">0</button>
+            <button class="key clear" onclick="handleKeyClick('clear')">⌫</button>
+        </div>
+
+        <div class="pressure-section">
+            <div class="pressure-title">ДАВЛЕНИЕ</div>
+            <div class="pressure-buttons">
+                <button class="pressure-btn" onclick="handlePressureClick('130-140')">130-140</button>
+                <button class="pressure-btn" onclick="handlePressureClick('141-150')">141-150</button>
+                <button class="pressure-btn" onclick="handlePressureClick('151-160')">151-160</button>
+                <button class="pressure-btn" onclick="handlePressureClick('160+')">160+</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Область для окрашивания нижней панели -->
+    <div class="bottom-safe-area"></div>
+
+<script>
+    let currentValue = '';
+    let selectedPressure = null;
+
+    function handleKeyClick(value) {
+        if (value === 'clear') {
+            currentValue = '';
+        } else if (value === '.' && !currentValue.includes('.')) {
+            if (currentValue === '') currentValue = '0';
+            currentValue += '.';
+        } else if (value !== '.') {
+            currentValue += value;
+        }
+        
+        if (currentValue.length > 6) {
+            currentValue = currentValue.slice(0, 6);
+        }
+        
+        document.getElementById('valueDisplay').textContent = currentValue || '0.0';
+    }
+
+    function handlePressureClick(pressure) {
+        document.querySelectorAll('.pressure-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        
+        event.target.classList.add('active');
+        selectedPressure = pressure;
+        
+        sendData();
+    }
+
+    function goToAnalytics() {
+        window.location.href = '/dashboard';
+    }
+
+    async function sendData() {
+        if (!currentValue || currentValue === '0.0') {
+            alert('Введите значение глюкозы');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/measurement', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    value: parseFloat(currentValue), 
+                    note: 'Давление: ' + selectedPressure
+                })
+            });
+
+            const data = await response.json();
+            
+            if (data.success) {
+                document.getElementById('valueDisplay').textContent = 'Отправлено';
+                document.getElementById('valueDisplay').classList.add('sent');
+                
+                setTimeout(() => {
+                    currentValue = '';
+                    selectedPressure = null;
+                    document.getElementById('valueDisplay').textContent = '0.0';
+                    document.getElementById('valueDisplay').classList.remove('sent');
+                    document.querySelectorAll('.pressure-btn').forEach(btn => {
+                        btn.classList.remove('active');
+                    });
+                }, 5000);
+            } else {
+                alert('Ошибка: ' + data.error);
+            }
+        } catch (error) {
+            alert('Ошибка соединения');
+        }
+    }
+
+    document.getElementById('valueDisplay').textContent = '0.0';
+</script>
+</body>
+</html>

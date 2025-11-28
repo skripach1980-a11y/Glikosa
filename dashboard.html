@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>Аналитика глюкозы</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            min-height: 100vh;
+            padding: 15px;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 20px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #00d4ff 0%, #7c4dff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(124, 77, 255, 0.3);
+            border-radius: 10px;
+            padding: 15px 10px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            background: linear-gradient(135deg, #fff 0%, #a8edea 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-top: 5px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #4cc9f0;
+            font-weight: 600;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(124, 77, 255, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            height: 350px;
+        }
+
+        h2 {
+            font-size: 18px;
+            margin: 20px 0 12px 0;
+            color: #4cc9f0;
+        }
+
+        table {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border-collapse: collapse;
+            margin: 15px 0;
+            border-radius: 10px;
+            overflow: hidden;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        th {
+            background: rgba(124, 77, 255, 0.2);
+            font-weight: 600;
+            color: #4cc9f0;
+            font-size: 13px;
+        }
+
+        .tabs {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .tab {
+            padding: 12px 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(124, 77, 255, 0.3);
+            border-radius: 8px;
+            cursor: pointer;
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            transition: all 0.2s ease;
+        }
+
+        .tab.active {
+            background: rgba(124, 77, 255, 0.4);
+            border-color: #7c4dff;
+            color: #fff;
+        }
+
+        .tab:nth-child(2) {
+            grid-column: 2;
+        }
+
+        .chart-wrapper {
+            display: none;
+        }
+
+        .chart-wrapper.active {
+            display: block;
+        }
+
+        .pdf-btn {
+            display: block;
+            width: 100%;
+            background: linear-gradient(135deg, #00d4ff 0%, #7c4dff 100%);
+            border: none;
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin: 20px 0;
+            text-align: center;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Аналитика глюкозы и давления</h1>
+        </div>
+        
+        <div id="stats" class="stats-grid">
+            <!-- Статистика загрузится через JavaScript -->
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="showChart('glucose')">Глюкоза</div>
+            <div class="tab" onclick="showChart('combined')">Все вместе</div>
+            <div class="tab" onclick="showChart('pressure')">Давление</div>
+        </div>
+
+        <div id="glucoseChartContainer" class="chart-wrapper active">
+            <div class="chart-container">
+                <canvas id="glucoseChart"></canvas>
+            </div>
+        </div>
+
+        <div id="pressureChartContainer" class="chart-wrapper">
+            <div class="chart-container">
+                <canvas id="pressureChart"></canvas>
+            </div>
+        </div>
+
+        <div id="combinedChartContainer" class="chart-wrapper">
+            <div class="chart-container">
+                <canvas id="combinedChart"></canvas>
+            </div>
+        </div>
+
+        <h2>Последние 5 измерений</h2>
+        <div id="measurementsTable">
+            <!-- Таблица загрузится через JavaScript -->
+        </div>
+
+        <button class="pdf-btn" onclick="generatePDF()">📄 Скачать PDF отчет</button>
+    </div>
+
+    <script>
+        let glucoseChart = null;
+        let pressureChart = null;
+        let combinedChart = null;
+        let currentMeasurements = [];
+
+        // Показать определенный график
+        function showChart(type) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.chart-wrapper').forEach(chart => chart.classList.remove('active'));
+            
+            if (type === 'glucose') {
+                document.querySelector('.tab:nth-child(1)').classList.add('active');
+                document.getElementById('glucoseChartContainer').classList.add('active');
+            } else if (type === 'pressure') {
+                document.querySelector('.tab:nth-child(3)').classList.add('active');
+                document.getElementById('pressureChartContainer').classList.add('active');
+            } else {
+                document.querySelector('.tab:nth-child(2)').classList.add('active');
+                document.getElementById('combinedChartContainer').classList.add('active');
+            }
+        }
+
+        // Загрузка всех данных
+        async function loadData() {
+            await loadStats();
+            await loadCharts();
+            await loadTable();
+        }
+
+        // Загрузка статистики
+        async function loadStats() {
+            const response = await fetch('/api/measurements');
+            currentMeasurements = await response.json();
+            
+            if (currentMeasurements.length > 0) {
+                const glucoseValues = currentMeasurements.map(m => m.value);
+                
+                // Анализ давления
+                const pressureValues = [];
+                const pressureCounts = {};
+                
+                currentMeasurements.forEach(m => {
+                    if (m.note && m.note.includes('Давление:')) {
+                        const pressureText = m.note.split('Давление: ')[1];
+                        pressureCounts[pressureText] = (pressureCounts[pressureText] || 0) + 1;
+                        
+                        // Преобразуем в числовое значение для среднего
+                        if (pressureText === '130-140') pressureValues.push(135);
+                        else if (pressureText === '141-150') pressureValues.push(145);
+                        else if (pressureText === '151-160') pressureValues.push(155);
+                        else if (pressureText === '160+') pressureValues.push(165);
+                    }
+                });
+                
+                const mostCommonPressure = Object.keys(pressureCounts).reduce((a, b) => 
+                    pressureCounts[a] > pressureCounts[b] ? a : b, 'Нет данных');
+                
+                const averagePressure = pressureValues.length > 0 ? 
+                    Math.round(pressureValues.reduce((a, b) => a + b, 0) / pressureValues.length) : 'Нет данных';
+                
+                const stats = {
+                    lastGlucose: currentMeasurements[0].value,
+                    averageGlucose: (glucoseValues.reduce((a, b) => a + b, 0) / glucoseValues.length).toFixed(1),
+                    minGlucose: Math.min(...glucoseValues).toFixed(1),
+                    maxGlucose: Math.max(...glucoseValues).toFixed(1),
+                    count: currentMeasurements.length,
+                    averagePressure: averagePressure,
+                    commonPressure: mostCommonPressure
+                };
+                
+                document.getElementById('stats').innerHTML = `
+                    <div class="stat-card">
+                        <div class="stat-label">Последняя глюкоза</div>
+                        <div class="stat-value">${stats.lastGlucose}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Средняя глюкоза</div>
+                        <div class="stat-value">${stats.averageGlucose}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Минимум</div>
+                        <div class="stat-value">${stats.minGlucose}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Максимум</div>
+                        <div class="stat-value">${stats.maxGlucose}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Всего измерений</div>
+                        <div class="stat-value">${stats.count}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Среднее давление</div>
+                        <div class="stat-value">${stats.averagePressure}</div>
+                    </div>
+                `;
+            } else {
+                document.getElementById('stats').innerHTML = '<div class="stat-card">Нет данных</div>';
+            }
+        }
+
+        // Загрузка графиков
+        async function loadCharts() {
+            if (currentMeasurements.length === 0) return;
+
+            const sortedData = [...currentMeasurements].reverse();
+            const displayData = sortedData.slice(-20);
+            
+            const dates = displayData.map(m => {
+                const date = new Date(m.date + 'T' + m.time);
+                return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+            });
+            
+            const glucoseValues = displayData.map(m => m.value);
+            const pressureValues = displayData.map(m => {
+                if (m.note && m.note.includes('Давление:')) {
+                    const pressureText = m.note.split('Давление: ')[1];
+                    return pressureText === '130-140' ? 135 :
+                           pressureText === '141-150' ? 145 :
+                           pressureText === '151-160' ? 155 :
+                           pressureText === '160+' ? 165 : null;
+                }
+                return null;
+            });
+
+            createGlucoseChart(dates, glucoseValues);
+            createPressureChart(dates, pressureValues);
+            createCombinedChart(dates, glucoseValues, pressureValues);
+        }
+
+        function createGlucoseChart(dates, glucoseValues) {
+            const ctx = document.getElementById('glucoseChart').getContext('2d');
+            
+            if (glucoseChart) {
+                glucoseChart.destroy();
+            }
+            
+            glucoseChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Глюкоза (mmol/L)',
+                        data: glucoseValues,
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Динамика уровня глюкозы',
+                            color: '#fff',
+                            font: { size: 14 }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#fff', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#fff', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            title: {
+                                display: true,
+                                text: 'Глюкоза (mmol/L)',
+                                color: '#fff',
+                                font: { size: 12 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createPressureChart(dates, pressureValues) {
+            const ctx = document.getElementById('pressureChart').getContext('2d');
+            
+            if (pressureChart) {
+                pressureChart.destroy();
+            }
+
+            pressureChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Давление',
+                        data: pressureValues,
+                        borderColor: '#6bcf7f',
+                        backgroundColor: 'rgba(107, 207, 127, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Динамика давления',
+                            color: '#fff',
+                            font: { size: 14 }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#fff', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                        },
+                        y: {
+                            ticks: { color: '#fff', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            title: {
+                                display: true,
+                                text: 'Давление',
+                                color: '#fff',
+                                font: { size: 12 }
+                            },
+                            min: 130,
+                            max: 170
+                        }
+                    }
+                }
+            });
+        }
+
+        function createCombinedChart(dates, glucoseValues, pressureValues) {
+            const ctx = document.getElementById('combinedChart').getContext('2d');
+            
+            if (combinedChart) {
+                combinedChart.destroy();
+            }
+
+            combinedChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [
+                        {
+                            label: 'Глюкоза (mmol/L)',
+                            data: glucoseValues,
+                            borderColor: '#ff6b6b',
+                            backgroundColor: 'rgba(255, 107, 107, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Давление',
+                            data: pressureValues,
+                            borderColor: '#6bcf7f',
+                            backgroundColor: 'rgba(107, 207, 127, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Глюкоза и давление',
+                            color: '#fff',
+                            font: { size: 14 }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#fff', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            ticks: { color: '#ff6b6b', font: { size: 11 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            title: {
+                                display: true,
+                                text: 'Глюкоза (mmol/L)',
+                                color: '#ff6b6b',
+                                font: { size: 12 }
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            ticks: { color: '#6bcf7f', font: { size: 11 } },
+                            grid: { drawOnChartArea: false },
+                            title: {
+                                display: true,
+                                text: 'Давление',
+                                color: '#6bcf7f',
+                                font: { size: 12 }
+                            },
+                            min: 130,
+                            max: 170
+                        }
+                    }
+                }
+            });
+        }
+
+        // Загрузка таблицы (только 5 последних)
+        async function loadTable() {
+            if (currentMeasurements.length > 0) {
+                const lastFive = currentMeasurements.slice(0, 5);
+                
+                let tableHTML = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Время</th>
+                                <th>Глюкоза</th>
+                                <th>Давление</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                lastFive.forEach(m => {
+                    const pressure = m.note && m.note.includes('Давление:') ? 
+                        m.note.split('Давление: ')[1] : '-';
+                    
+                    tableHTML += `
+                        <tr>
+                            <td>${m.date}</td>
+                            <td>${m.time}</td>
+                            <td><strong>${m.value}</strong></td>
+                            <td>${pressure}</td>
+                        </tr>
+                    `;
+                });
+                
+                tableHTML += '</tbody></table>';
+                document.getElementById('measurementsTable').innerHTML = tableHTML;
+            } else {
+                document.getElementById('measurementsTable').innerHTML = '<p>Нет данных для отображения</p>';
+            }
+        }
+
+        // PDF отчет
+        async function generatePDF() {
+            alert('PDF отчет будет доступен после настройки сервера. Сейчас можно сделать скриншот страницы.');
+        }
+
+        document.addEventListener('DOMContentLoaded', loadData);
+    </script>
+</body>
+</html>

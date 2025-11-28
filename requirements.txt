@@ -1,0 +1,15 @@
+flask==2.3.3
+weasyprint==58.0
+matplotlib==3.7.2
+pillow==10.0.1
+cairocffi==1.6.1
+cairosvg==2.7.1
+numpy==1.24.3
+python-dateutil==2.8.2
+cycler==0.11.0
+fonttools==4.42.1
+kiwisolver==1.4.5
+pyparsing==3.1.1
+six==1.16.0
+contourpy==1.1.1
+packaging==23.1
