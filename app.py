@@ -9,8 +9,6 @@ matplotlib.use('Agg')
 import base64
 
 app = Flask(__name__)
-
-# Указываем явно, что шаблоны в текущей директории
 app.template_folder = '.'
 
 def init_db():
@@ -29,6 +27,26 @@ def init_db():
         print("✅ База данных инициализирована")
     except Exception as e:
         print(f"❌ Ошибка инициализации БД: {e}")
+
+def ensure_db():
+    """Проверяет и создает БД если нужно"""
+    try:
+        conn = sqlite3.connect('glucose.db')
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='measurements'")
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
+            print("🔄 Таблица не найдена, создаем...")
+            init_db()
+        return True
+    except:
+        init_db()
+        return True
+
+# Проверяем БД при запуске
+ensure_db()
 
 @app.route('/')
 def index():
@@ -49,6 +67,7 @@ def analytics():
 @app.route('/api/measurement', methods=['POST'])
 def add_measurement():
     try:
+        ensure_db()
         data = request.get_json()
         
         if not data:
@@ -72,6 +91,7 @@ def add_measurement():
 @app.route('/api/measurements')
 def get_measurements():
     try:
+        ensure_db()
         conn = sqlite3.connect('glucose.db')
         c = conn.cursor()
         c.execute('''
@@ -101,6 +121,7 @@ def get_measurements():
 @app.route('/generate_report')
 def generate_report():
     try:
+        ensure_db()
         conn = sqlite3.connect('glucose.db')
         c = conn.cursor()
         c.execute('''
@@ -271,6 +292,6 @@ def create_chart_image(measurements):
         return None
 
 if __name__ == '__main__':
-    init_db()
+    ensure_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
