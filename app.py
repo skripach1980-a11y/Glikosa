@@ -29,7 +29,6 @@ def init_db():
         print(f"❌ Ошибка инициализации БД: {e}")
 
 def ensure_db():
-    """Проверяет и создает БД если нужно"""
     try:
         conn = sqlite3.connect('glucose.db')
         c = conn.cursor()
@@ -45,7 +44,6 @@ def ensure_db():
         init_db()
         return True
 
-# Проверяем БД при запуске
 ensure_db()
 
 @app.route('/')
@@ -63,6 +61,139 @@ def dashboard():
 @app.route('/analytics')
 def analytics():
     return render_template('dashboard.html')
+
+@app.route('/print_report')
+def print_report():
+    try:
+        ensure_db()
+        conn = sqlite3.connect('glucose.db')
+        c = conn.cursor()
+        c.execute('''
+            SELECT date(created_at) as date, time(created_at) as time, value, note
+            FROM measurements 
+            WHERE created_at >= date('now', '-30 days')
+            ORDER BY created_at DESC
+        ''')
+        
+        measurements = []
+        glucose_values = []
+        pressure_values = []
+        
+        for row in c.fetchall():
+            date, time, value, note = row
+            pressure = note.split('Давление: ')[1] if note and 'Давление:' in note else ''
+            
+            measurements.append({
+                'date': date,
+                'time': time,
+                'value': value,
+                'pressure': pressure
+            })
+            glucose_values.append(value)
+            
+            if pressure:
+                if pressure == '130-140': pressure_values.append(135)
+                elif pressure == '141-150': pressure_values.append(145)
+                elif pressure == '151-160': pressure_values.append(155)
+                elif pressure == '160+': pressure_values.append(165)
+        
+        conn.close()
+        
+        # Создаем графики для печати
+        glucose_chart = create_print_glucose_chart(measurements)
+        pressure_chart = create_print_pressure_chart(measurements)
+        
+        return render_template('print_report.html', 
+                             measurements=measurements,
+                             glucose_values=glucose_values,
+                             pressure_values=pressure_values,
+                             glucose_chart=glucose_chart,
+                             pressure_chart=pressure_chart)
+        
+    except Exception as e:
+        return f"Ошибка генерации отчета: {str(e)}", 500
+
+def create_print_glucose_chart(measurements):
+    try:
+        if not measurements:
+            return None
+            
+        recent_measurements = measurements[:30]
+        dates = [f"{m['date']}" for m in recent_measurements]
+        glucose_values = [m['value'] for m in recent_measurements]
+        
+        plt.figure(figsize=(14, 8))
+        plt.plot(glucose_values, marker='o', linewidth=3, markersize=6, color='black')
+        
+        if glucose_values:
+            min_val = min(glucose_values)
+            max_val = max(glucose_values)
+            min_idx = glucose_values.index(min_val)
+            max_idx = glucose_values.index(max_val)
+            
+            plt.plot(min_idx, min_val, 'ko', markersize=10, label=f'Min: {min_val}')
+            plt.plot(max_idx, max_val, 'ko', markersize=10, label=f'Max: {max_val}')
+        
+        plt.title('ДИНАМИКА УРОВНЯ ГЛЮКОЗЫ ЗА 30 ДНЕЙ', fontsize=16, fontweight='bold')
+        plt.xlabel('Дни', fontsize=12)
+        plt.ylabel('Глюкоза (mmol/L)', fontsize=12)
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.xticks(range(len(dates)), dates, rotation=45, fontsize=8)
+        plt.tight_layout()
+        
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=100, bbox_inches='tight')
+        plt.close()
+        
+        img_buffer.seek(0)
+        return base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания графика глюкозы: {str(e)}")
+        return None
+
+def create_print_pressure_chart(measurements):
+    try:
+        if not measurements:
+            return None
+            
+        recent_measurements = measurements[:30]
+        dates = [f"{m['date']}" for m in recent_measurements]
+        pressure_values = []
+        
+        for m in recent_measurements:
+            if m['pressure']:
+                if m['pressure'] == '130-140': pressure_values.append(135)
+                elif m['pressure'] == '141-150': pressure_values.append(145)
+                elif m['pressure'] == '151-160': pressure_values.append(155)
+                elif m['pressure'] == '160+': pressure_values.append(165)
+            else:
+                pressure_values.append(None)
+        
+        plt.figure(figsize=(14, 8))
+        plt.plot([v for v in pressure_values if v is not None], 
+                marker='s', linewidth=3, markersize=6, color='black')
+        
+        plt.title('ДИНАМИКА ДАВЛЕНИЯ ЗА 30 ДНЕЙ', fontsize=16, fontweight='bold')
+        plt.xlabel('Дни', fontsize=12)
+        plt.ylabel('Давление', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.xticks(range(len([v for v in pressure_values if v is not None])), 
+                  [dates[i] for i, v in enumerate(pressure_values) if v is not None], 
+                  rotation=45, fontsize=8)
+        plt.tight_layout()
+        
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=100, bbox_inches='tight')
+        plt.close()
+        
+        img_buffer.seek(0)
+        return base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания графика давления: {str(e)}")
+        return None
 
 @app.route('/api/measurement', methods=['POST'])
 def add_measurement():
