@@ -10,6 +10,9 @@ import base64
 
 app = Flask(__name__)
 
+# Указываем явно, что шаблоны в текущей директории
+app.template_folder = '.'
+
 def init_db():
     try:
         conn = sqlite3.connect('glucose.db')
