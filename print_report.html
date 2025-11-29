@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отчет для печати</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            margin: 20px;
+            color: #000;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #000;
+            padding-bottom: 10px;
+        }
+        
+        h1 {
+            font-size: 18px;
+            margin-bottom: 5px;
+        }
+        
+        .statistics {
+            background: #f0f0f0;
+            border: 1px solid #000;
+            padding: 10px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        
+        .two-columns {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        
+        .column {
+            flex: 1;
+            border: 1px solid #000;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        
+        th, td {
+            border: 1px solid #000;
+            padding: 5px;
+            text-align: center;
+        }
+        
+        th {
+            background: #e0e0e0;
+        }
+        
+        .break {
+            height: 800px;
+            visibility: hidden;
+        }
+        
+        .chart-placeholder {
+            border: 1px solid #000;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .footer {
+            text-align: center;
+            font-size: 12px;
+            margin-top: 10px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <!-- ЛИСТ 1: ТАБЛИЦА -->
+    <div class="header">
+        <h1>МЕДИЦИНСКИЙ ОТЧЕТ</h1>
+        <div>Мониторинг уровня глюкозы и артериального давления</div>
+        <div>Период: {{ start_date }} - {{ end_date }}</div>
+    </div>
+    
+    <div class="statistics">
+        <strong>СВОДНАЯ СТАТИСТИКА:</strong> 
+        Глюкоза: {{ "%.1f"|format(stats.avg_glucose) }} mmol/L ({{ "%.1f"|format(stats.min_glucose) }}-{{ "%.1f"|format(stats.max_glucose) }}) | 
+        Измерений: {{ stats.total }}
+    </div>
+
+    <div style="text-align: center; font-weight: bold; margin: 10px 0;">ТАБЛИЦА ИЗМЕРЕНИЙ</div>
+    
+    <div class="two-columns">
+        <!-- ЛЕВАЯ КОЛОНКА -->
+        <div class="column">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Дата</th>
+                        <th>Время</th>
+                        <th>Глюкоза</th>
+                        <th>Давление</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for measurement in measurements[:15] %}
+                    <tr>
+                        <td>{{ measurement.date }}</td>
+                        <td>{{ measurement.time }}</td>
+                        <td>{{ measurement.value }}</td>
+                        <td>{{ measurement.pressure if measurement.pressure else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- ПРАВАЯ КОЛОНКА -->
+        <div class="column">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Дата</th>
+                        <th>Время</th>
+                        <th>Глюкоза</th>
+                        <th>Давление</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for measurement in measurements[15:30] %}
+                    <tr>
+                        <td>{{ measurement.date }}</td>
+                        <td>{{ measurement.time }}</td>
+                        <td>{{ measurement.value }}</td>
+                        <td>{{ measurement.pressure if measurement.pressure else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="footer">Страница 1 из 3 - Таблица измерений</div>
+
+    <!-- РАЗРЫВ СТРАНИЦЫ -->
+    <div class="break"></div>
+
+    <!-- ЛИСТ 2: ГРАФИК ГЛЮКОЗЫ -->
+    <div class="header">
+        <h1>ДИНАМИКА УРОВНЯ ГЛЮКОЗЫ</h1>
+        <div>Период: {{ start_date }} - {{ end_date }}</div>
+    </div>
+    
+    <div class="chart-placeholder">
+        <div>
+            <div style="font-size: 16px; font-weight: bold;">ГРАФИК ГЛЮКОЗЫ</div>
+            <div style="margin-top: 10px;">Диапазон: {{ "%.1f"|format(stats.min_glucose) }} - {{ "%.1f"|format(stats.max_glucose) }} mmol/L</div>
+        </div>
+    </div>
+    
+    <div class="footer">Страница 2 из 3 - График уровня глюкозы</div>
+
+    <!-- РАЗРЫВ СТРАНИЦЫ -->
+    <div class="break"></div>
+
+    <!-- ЛИСТ 3: ГРАФИК ДАВЛЕНИЯ -->
+    <div class="header">
+        <h1>ДИНАМИКА АРТЕРИАЛЬНОГО ДАВЛЕНИЯ</h1>
+        <div>Период: {{ start_date }} - {{ end_date }}</div>
+    </div>
+    
+    <div class="chart-placeholder">
+        <div>
+            <div style="font-size: 16px; font-weight: bold;">ГРАФИК ДАВЛЕНИЯ</div>
+            <div style="margin-top: 10px;">На основе измерений давления</div>
+        </div>
+    </div>
+    
+    <div class="footer">Страница 3 из 3 - График артериального давления</div>
+
+    <script>
+        // Подсказка для пользователя
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(function() {
+                if (confirm('Для правильной печати выберите "Альбомная ориентация". Открыть диалог печати?')) {
+                    window.print();
+                }
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
