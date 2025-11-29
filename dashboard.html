@@ -205,7 +205,7 @@
             <!-- Таблица загрузится через JavaScript -->
         </div>
 
-        <button class="pdf-btn" onclick="generatePDF()">📄 Скачать PDF отчет</button>
+        <button class="pdf-btn" onclick="openPrintVersion()">🖨️ Версия для печати</button>
     </div>
 
     <script>
@@ -361,8 +361,8 @@
                     }]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    responsive: true;
+                    maintainAspectRatio: false;
                     plugins: {
                         title: {
                             display: true,
@@ -567,9 +567,9 @@
             }
         }
 
-        // PDF отчет
-        async function generatePDF() {
-            alert('PDF отчет будет доступен после настройки сервера. Сейчас можно сделать скриншот страницы.');
+        // Версия для печати
+        function openPrintVersion() {
+            window.open('/print_report', '_blank');
         }
 
         document.addEventListener('DOMContentLoaded', loadData);
