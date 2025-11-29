@@ -63,15 +63,65 @@
             visibility: hidden;
         }
         
-        .chart-placeholder {
+        .chart-container {
             border: 1px solid #000;
-            padding: 40px;
-            text-align: center;
+            padding: 20px;
             margin: 20px 0;
-            height: 400px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        }
+        
+        .chart-title {
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        
+        .simple-chart {
+            width: 100%;
+            height: 300px;
+            position: relative;
+            border: 1px solid #ccc;
+            background: white;
+        }
+        
+        .chart-axis-x {
+            position: absolute;
+            bottom: 30px;
+            left: 40px;
+            right: 20px;
+            height: 2px;
+            background: #000;
+        }
+        
+        .chart-axis-y {
+            position: absolute;
+            top: 20px;
+            bottom: 30px;
+            left: 40px;
+            width: 2px;
+            background: #000;
+        }
+        
+        .chart-line {
+            position: absolute;
+            background: #000;
+            height: 3px;
+            transform-origin: 0 0;
+        }
+        
+        .chart-point {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: #000;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        
+        .chart-label {
+            position: absolute;
+            font-size: 10px;
+            text-align: center;
         }
         
         .footer {
@@ -159,10 +209,10 @@
         <div>Период: {{ start_date }} - {{ end_date }}</div>
     </div>
     
-    <div class="chart-placeholder">
-        <div>
-            <div style="font-size: 16px; font-weight: bold;">ГРАФИК ГЛЮКОЗЫ</div>
-            <div style="margin-top: 10px;">Диапазон: {{ "%.1f"|format(stats.min_glucose) }} - {{ "%.1f"|format(stats.max_glucose) }} mmol/L</div>
+    <div class="chart-container">
+        <div class="chart-title">ГРАФИК ИЗМЕРЕНИЙ ГЛЮКОЗЫ (mmol/L)</div>
+        <div class="simple-chart" id="glucoseChart">
+            <!-- График глюкозы будет здесь -->
         </div>
     </div>
     
@@ -177,23 +227,126 @@
         <div>Период: {{ start_date }} - {{ end_date }}</div>
     </div>
     
-    <div class="chart-placeholder">
-        <div>
-            <div style="font-size: 16px; font-weight: bold;">ГРАФИК ДАВЛЕНИЯ</div>
-            <div style="margin-top: 10px;">На основе измерений давления</div>
+    <div class="chart-container">
+        <div class="chart-title">ГРАФИК ИЗМЕРЕНИЙ АРТЕРИАЛЬНОГО ДАВЛЕНИЯ</div>
+        <div class="simple-chart" id="pressureChart">
+            <!-- График давления будет здесь -->
         </div>
     </div>
     
     <div class="footer">Страница 3 из 3 - График артериального давления</div>
 
     <script>
-        // Подсказка для пользователя
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(function() {
-                if (confirm('Для правильной печати выберите "Альбомная ориентация". Открыть диалог печати?')) {
-                    window.print();
+        // Данные для графиков из переменных шаблона
+        const glucoseData = [
+            {% for measurement in measurements %}
+            {{ measurement.value }},
+            {% endfor %}
+        ];
+        
+        // Создаем данные давления из примечаний
+        const pressureData = [
+            {% for measurement in measurements %}
+            {% if measurement.pressure %}
+                {% if measurement.pressure == '130-140' %}135
+                {% elif measurement.pressure == '141-150' %}145
+                {% elif measurement.pressure == '151-160' %}155
+                {% elif measurement.pressure == '160+' %}165
+                {% else %}0{% endif %}
+            {% else %}0{% endif %},
+            {% endfor %}
+        ];
+        
+        // Функция для создания простого графика
+        function createSimpleChart(containerId, data, title, isPressure = false) {
+            const container = document.getElementById(containerId);
+            if (!container || data.length === 0) return;
+            
+            // Очищаем контейнер
+            container.innerHTML = '';
+            
+            // Создаем оси
+            const axisX = document.createElement('div');
+            axisX.className = 'chart-axis-x';
+            container.appendChild(axisX);
+            
+            const axisY = document.createElement('div');
+            axisY.className = 'chart-axis-y';
+            container.appendChild(axisY);
+            
+            // Рассчитываем масштаб
+            const validData = data.filter(val => val > 0);
+            if (validData.length === 0) return;
+            
+            const maxValue = Math.max(...validData);
+            const minValue = Math.min(...validData);
+            const range = maxValue - minValue;
+            
+            const chartWidth = container.offsetWidth - 60;
+            const chartHeight = container.offsetHeight - 50;
+            
+            // Создаем линию графика
+            for (let i = 0; i < validData.length - 1; i++) {
+                if (validData[i] > 0 && validData[i + 1] > 0) {
+                    const x1 = 40 + (i * chartWidth / (validData.length - 1));
+                    const y1 = 20 + chartHeight - ((validData[i] - minValue) / range * chartHeight);
+                    const x2 = 40 + ((i + 1) * chartWidth / (validData.length - 1));
+                    const y2 = 20 + chartHeight - ((validData[i + 1] - minValue) / range * chartHeight);
+                    
+                    const line = document.createElement('div');
+                    line.className = 'chart-line';
+                    line.style.left = x1 + 'px';
+                    line.style.top = y1 + 'px';
+                    line.style.width = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) + 'px';
+                    line.style.transform = `rotate(${Math.atan2(y2 - y1, x2 - x1)}rad)`;
+                    container.appendChild(line);
                 }
-            }, 1000);
+            }
+            
+            // Создаем точки
+            for (let i = 0; i < validData.length; i++) {
+                if (validData[i] > 0) {
+                    const x = 40 + (i * chartWidth / (validData.length - 1));
+                    const y = 20 + chartHeight - ((validData[i] - minValue) / range * chartHeight);
+                    
+                    const point = document.createElement('div');
+                    point.className = 'chart-point';
+                    point.style.left = x + 'px';
+                    point.style.top = y + 'px';
+                    container.appendChild(point);
+                    
+                    // Подпись для некоторых точек
+                    if (i % 5 === 0) {
+                        const label = document.createElement('div');
+                        label.className = 'chart-label';
+                        label.textContent = validData[i];
+                        label.style.left = x + 'px';
+                        label.style.top = (y - 15) + 'px';
+                        container.appendChild(label);
+                    }
+                }
+            }
+            
+            // Подписи осей
+            const minLabel = document.createElement('div');
+            minLabel.className = 'chart-label';
+            minLabel.textContent = isPressure ? minValue : minValue.toFixed(1);
+            minLabel.style.left = '20px';
+            minLabel.style.top = (20 + chartHeight) + 'px';
+            container.appendChild(minLabel);
+            
+            const maxLabel = document.createElement('div');
+            maxLabel.className = 'chart-label';
+            maxLabel.textContent = isPressure ? maxValue : maxValue.toFixed(1);
+            maxLabel.style.left = '20px';
+            maxLabel.style.top = '10px';
+            container.appendChild(maxLabel);
+        }
+        
+        // Создаем графики после загрузки
+        document.addEventListener('DOMContentLoaded', function() {
+            createSimpleChart('glucoseChart', glucoseData, 'Глюкоза', false);
+            createSimpleChart('pressureChart', pressureData, 'Давление', true);
         });
     </script>
 </body>
