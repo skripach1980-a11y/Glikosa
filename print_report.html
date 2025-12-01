@@ -173,15 +173,14 @@
     </div>
     
     <div class="chart-container">
-        {% if chart_base64 %}
-            <img src="data:image/png;base64,{{ chart_base64 }}" 
+        {% if glucose_chart_base64 %}
+            <img src="data:image/png;base64,{{ glucose_chart_base64 }}" 
                  alt="График уровня глюкозы" 
                  class="chart-image">
         {% else %}
             <div>
                 <div style="font-size: 16px; font-weight: bold;">ГРАФИК ГЛЮКОЗЫ</div>
                 <div style="margin-top: 10px;">Диапазон: {{ "%.1f"|format(stats.min_glucose) }} - {{ "%.1f"|format(stats.max_glucose) }} mmol/L</div>
-                <!-- ЯВНО ПОКАЗЫВАЕМ НАПРАВЛЕНИЕ ВРЕМЕНИ -->
                 <div style="margin-top: 20px; font-size: 12px; color: #666;">
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0;">
                         <div style="text-align: left;">
@@ -211,24 +210,36 @@
     </div>
     
     <div class="chart-container">
-        <div>
-            <div style="font-size: 16px; font-weight: bold;">ГРАФИК ДАВЛЕНИЯ</div>
-            <div style="margin-top: 10px;">На основе измерений давления</div>
-            <!-- ТАКАЯ ЖЕ ШКАЛА ВРЕМЕНИ -->
-            <div style="margin-top: 20px; font-size: 12px; color: #666;">
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0;">
-                    <div style="text-align: left;">
-                        <div style="font-weight: bold;">⬤ НАЧАЛО</div>
-                        <div>{{ start_date }}</div>
-                    </div>
-                    <div>← время →</div>
-                    <div style="text-align: right;">
-                        <div style="font-weight: bold;">⬤ КОНЕЦ</div>
-                        <div>{{ end_date }}</div>
+        {% if pressure_chart_base64 %}
+            <img src="data:image/png;base64,{{ pressure_chart_base64 }}" 
+                 alt="График артериального давления" 
+                 class="chart-image">
+        {% else %}
+            <div>
+                <div style="font-size: 16px; font-weight: bold;">ГРАФИК ДАВЛЕНИЯ</div>
+                <div style="margin-top: 10px;">
+                    {% if stats.total > 0 %}
+                        Недостаточно данных о давлении для построения графика
+                    {% else %}
+                        Нет измерений давления
+                    {% endif %}
+                </div>
+                <!-- ШКАЛА ВРЕМЕНИ -->
+                <div style="margin-top: 20px; font-size: 12px; color: #666;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0;">
+                        <div style="text-align: left;">
+                            <div style="font-weight: bold;">⬤ НАЧАЛО</div>
+                            <div>{{ start_date }}</div>
+                        </div>
+                        <div>← время →</div>
+                        <div style="text-align: right;">
+                            <div style="font-weight: bold;">⬤ КОНЕЦ</div>
+                            <div>{{ end_date }}</div>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
+        {% endif %}
     </div>
     
     <div class="footer">Страница 3 из 3 - График артериального давления</div>
