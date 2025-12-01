@@ -72,6 +72,7 @@ def dashboard():
 def analytics():
     return render_template('dashboard.html')
 
+# ВАЖНО: Исправленная функция print_report
 @app.route('/print_report')
 def print_report():
     try:
@@ -79,46 +80,66 @@ def print_report():
         conn = sqlite3.connect('glucose.db')
         c = conn.cursor()
         
-        # Получаем данные за последние 30 дней
+        # Получаем данные за последние 30 дней - ВСЕ ЗАПИСИ
         c.execute('''
             SELECT date(created_at) as date, time(created_at) as time, value, note
             FROM measurements 
             WHERE created_at >= date('now', '-30 days')
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC  # Для таблицы - новые сверху
         ''')
         
-        measurements = []
+        measurements_for_table = []  # Для таблицы (DESC)
+        measurements_for_chart = []  # Для графика (будем сортировать ASC)
         glucose_values = []
         
         for row in c.fetchall():
             date, time, value, note = row
             pressure = note.split('Давление: ')[1] if note and 'Давление:' in note else ''
             
-            measurements.append({
+            # Для таблицы (первые 30 записей)
+            if len(measurements_for_table) < 30:
+                measurements_for_table.append({
+                    'date': date,
+                    'time': time,
+                    'value': value,
+                    'pressure': pressure
+                })
+            
+            # Для графика и статистики (все записи)
+            measurements_for_chart.append({
                 'date': date,
                 'time': time,
                 'value': value,
-                'pressure': pressure
+                'datetime': f"{date} {time}",
+                'timestamp': datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M:%S")
             })
             glucose_values.append(value)
         
         conn.close()
         
+        # СОРТИРУЕМ ДЛЯ ГРАФИКА по возрастанию (старые → новые)
+        measurements_for_chart_sorted = sorted(measurements_for_chart, 
+                                              key=lambda x: x['timestamp'])
+        
+        # Генерируем график глюкозы
+        chart_base64 = ""
+        if measurements_for_chart_sorted:
+            chart_image = create_chart_image(measurements_for_chart_sorted)
+            if chart_image:
+                chart_base64 = base64.b64encode(chart_image).decode('utf-8')
+        
         # Рассчитываем статистику
         if glucose_values:
             stats = {
-                'total': len(measurements),
+                'total': len(measurements_for_chart),
                 'avg_glucose': sum(glucose_values) / len(glucose_values),
                 'min_glucose': min(glucose_values),
                 'max_glucose': max(glucose_values),
             }
             
             # Определяем период отчета
-            if measurements:
-                start_date = measurements[-1]['date']  # Самая старая дата
-                end_date = measurements[0]['date']     # Самая новая дата
-            else:
-                start_date = end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = measurements_for_chart_sorted[0]['date'] if measurements_for_chart_sorted else datetime.now().strftime('%Y-%m-%d')
+            end_date = measurements_for_chart_sorted[-1]['date'] if measurements_for_chart_sorted else datetime.now().strftime('%Y-%m-%d')
         else:
             stats = {
                 'total': 0,
@@ -128,15 +149,105 @@ def print_report():
             }
             start_date = end_date = datetime.now().strftime('%Y-%m-%d')
         
+        # Передаем ВСЕ в шаблон
         return render_template('print_report.html', 
-                             measurements=measurements,
+                             measurements=measurements_for_table,  # Для таблицы
                              stats=stats,
                              start_date=start_date,
-                             end_date=end_date)
+                             end_date=end_date,
+                             chart_base64=chart_base64)  # График для HTML
         
     except Exception as e:
         return f"Ошибка генерации отчета: {str(e)}", 500
 
+# Функция create_chart_image ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ - она уже правильная!
+def create_chart_image(measurements):
+    try:
+        if not measurements:
+            return None
+            
+        # measurements уже отсортированы ASC
+        # Берем последние 20 измерений (уже отсортированных)
+        recent_measurements = measurements[-20:] if len(measurements) > 20 else measurements
+        
+        # Формируем метки дат
+        dates = []
+        for m in recent_measurements:
+            date_obj = datetime.strptime(m['date'], '%Y-%m-%d')
+            date_str = date_obj.strftime('%d.%m')
+            dates.append(f"{date_str}\n{m['time']}")
+        
+        glucose_values = [m['value'] for m in recent_measurements]
+        
+        # Создаем график
+        plt.figure(figsize=(14, 6))
+        
+        # Основная линия графика
+        plt.plot(glucose_values, marker='o', linewidth=2, markersize=6, 
+                color='#2c3e50', markerfacecolor='white', markeredgewidth=2)
+        
+        # Заливка под графиком
+        plt.fill_between(range(len(glucose_values)), glucose_values, 
+                        alpha=0.1, color='#2c3e50')
+        
+        if glucose_values:
+            # Находим min/max
+            min_val = min(glucose_values)
+            max_val = max(glucose_values)
+            min_idx = glucose_values.index(min_val)
+            max_idx = glucose_values.index(max_val)
+            
+            # Подсвечиваем min/max
+            plt.plot(min_idx, min_val, 'go', markersize=10, 
+                    label=f'Min: {min_val}')
+            plt.plot(max_idx, max_val, 'ro', markersize=10, 
+                    label=f'Max: {max_val}')
+        
+        # Настройки графика
+        plt.title('Динамика уровня глюкозы', fontsize=18, fontweight='bold', pad=20)
+        plt.xlabel('Дата и время измерения', fontsize=12, labelpad=10)
+        plt.ylabel('Глюкоза (mmol/L)', fontsize=12, labelpad=10)
+        
+        # Сетка
+        plt.grid(True, alpha=0.2, linestyle='--')
+        
+        # Подписи оси X
+        plt.xticks(range(len(dates)), dates, rotation=45, fontsize=10)
+        
+        # Добавляем метки значений на точках
+        for i, (date, value) in enumerate(zip(dates, glucose_values)):
+            plt.annotate(f'{value:.1f}', 
+                        xy=(i, value),
+                        xytext=(0, 10),
+                        textcoords='offset points',
+                        ha='center',
+                        fontsize=9,
+                        color='#2c3e50')
+        
+        # Легенда
+        plt.legend(loc='upper left', fontsize=10)
+        
+        # Целевые зоны (опционально)
+        plt.axhspan(3.9, 5.5, alpha=0.1, color='green', label='Целевая зона')
+        
+        plt.tight_layout()
+        
+        # Сохраняем
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=150, 
+                   bbox_inches='tight', facecolor='white')
+        plt.close()
+        
+        img_buffer.seek(0)
+        return img_buffer.getvalue()
+        
+    except Exception as e:
+        print(f"❌ Ошибка создания графика: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ БЕЗ ИЗМЕНЕНИЙ
 @app.route('/api/measurement', methods=['POST'])
 def add_measurement():
     try:
@@ -324,96 +435,6 @@ def generate_report_html(measurements, glucose_values):
     
     return html
 
-def create_chart_image(measurements):
-    try:
-        if not measurements:
-            return None
-            
-        # ВАЖНО: отсортировать по возрастанию даты!
-        # measurements уже отсортированы DESC, нужно перевернуть
-        sorted_measurements = sorted(measurements, 
-                                   key=lambda x: (x['date'], x['time']))
-        
-        # Берем последние 20 измерений (уже отсортированных)
-        recent_measurements = sorted_measurements[-20:] if len(sorted_measurements) > 20 else sorted_measurements
-        
-        # Формируем метки дат
-        dates = []
-        for m in recent_measurements:
-            # Более читаемый формат даты
-            date_obj = datetime.strptime(m['date'], '%Y-%m-%d')
-            date_str = date_obj.strftime('%d.%m')
-            dates.append(f"{date_str}\n{m['time']}")
-        
-        glucose_values = [m['value'] for m in recent_measurements]
-        
-        # Создаем график
-        plt.figure(figsize=(14, 6))
-        
-        # Основная линия графика
-        plt.plot(glucose_values, marker='o', linewidth=2, markersize=6, 
-                color='#2c3e50', markerfacecolor='white', markeredgewidth=2)
-        
-        # Заливка под графиком
-        plt.fill_between(range(len(glucose_values)), glucose_values, 
-                        alpha=0.1, color='#2c3e50')
-        
-        if glucose_values:
-            # Находим min/max
-            min_val = min(glucose_values)
-            max_val = max(glucose_values)
-            min_idx = glucose_values.index(min_val)
-            max_idx = glucose_values.index(max_val)
-            
-            # Подсвечиваем min/max
-            plt.plot(min_idx, min_val, 'go', markersize=10, 
-                    label=f'Min: {min_val}')
-            plt.plot(max_idx, max_val, 'ro', markersize=10, 
-                    label=f'Max: {max_val}')
-        
-        # Настройки графика
-        plt.title('Динамика уровня глюкозы', fontsize=18, fontweight='bold', pad=20)
-        plt.xlabel('Дата и время измерения', fontsize=12, labelpad=10)
-        plt.ylabel('Глюкоза (mmol/L)', fontsize=12, labelpad=10)
-        
-        # Сетка
-        plt.grid(True, alpha=0.2, linestyle='--')
-        
-        # Подписи оси X
-        plt.xticks(range(len(dates)), dates, rotation=45, fontsize=10)
-        
-        # Добавляем метки значений на точках
-        for i, (date, value) in enumerate(zip(dates, glucose_values)):
-            plt.annotate(f'{value:.1f}', 
-                        xy=(i, value),
-                        xytext=(0, 10),
-                        textcoords='offset points',
-                        ha='center',
-                        fontsize=9,
-                        color='#2c3e50')
-        
-        # Легенда
-        plt.legend(loc='upper left', fontsize=10)
-        
-        # Целевые зоны (опционально)
-        plt.axhspan(3.9, 5.5, alpha=0.1, color='green', label='Целевая зона')
-        
-        plt.tight_layout()
-        
-        # Сохраняем
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=150, 
-                   bbox_inches='tight', facecolor='white')
-        plt.close()
-        
-        img_buffer.seek(0)
-        return img_buffer.getvalue()
-        
-    except Exception as e:
-        print(f"❌ Ошибка создания графика: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
 if __name__ == '__main__':
     ensure_db()
     port = int(os.environ.get('PORT', 5000))
