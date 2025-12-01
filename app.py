@@ -11,9 +11,36 @@ import base64
 app = Flask(__name__)
 app.template_folder = '.'
 
+# УМНАЯ ПРОВЕРКА ПУТИ ДЛЯ БАЗЫ
+def get_db_path():
+    """Выбираем лучший путь для базы данных"""
+    possible_paths = [
+        '/tmp/glucose.db',           # Сохраняется 30 дней на Render
+        '/var/tmp/glucose.db',       # Альтернативный tmp
+        'glucose_persistent.db',     # Файл в приложении
+        'glucose.db',                # Стандартный путь
+    ]
+    
+    for path in possible_paths:
+        try:
+            # Проверяем можно ли писать в директорию
+            dir_path = os.path.dirname(path) if os.path.dirname(path) else '.'
+            if os.path.exists(dir_path) and os.access(dir_path, os.W_OK):
+                print(f"✅ Используем путь для БД: {path}")
+                return path
+        except:
+            continue
+    
+    # Если ничего не подошло - используем последний вариант
+    print(f"⚠️  Используем fallback путь: glucose.db")
+    return 'glucose.db'
+
+DB_PATH = get_db_path()
+
 def init_db():
+    """Создаем базу если её нет"""
     try:
-        conn = sqlite3.connect('glucose.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
             CREATE TABLE IF NOT EXISTS measurements
@@ -23,26 +50,49 @@ def init_db():
              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
         ''')
         conn.commit()
+        
+        # Проверяем что таблица создана
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count = c.fetchone()[0]
+        
         conn.close()
-        print("✅ База данных инициализирована")
+        print(f"✅ База создана/проверена: {DB_PATH}, записей: {count}")
+        return True
     except Exception as e:
-        print(f"❌ Ошибка инициализации БД: {e}")
+        print(f"❌ Ошибка создания БД: {e}")
+        return False
 
 def ensure_db():
+    """Проверяем базу, создаем если нет"""
     try:
-        conn = sqlite3.connect('glucose.db')
+        # Если файла нет - создаем
+        if not os.path.exists(DB_PATH):
+            print(f"🔄 Файл БД не найден, создаем: {DB_PATH}")
+            return init_db()
+        
+        # Если файл есть - проверяем структуру
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
+        # Проверяем таблицу
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='measurements'")
         result = c.fetchone()
-        conn.close()
         
         if not result:
-            print("🔄 Таблица не найдена, создаем...")
-            init_db()
+            print("🔄 Таблица measurements не найдена, создаем...")
+            conn.close()
+            return init_db()
+        
+        # Проверяем есть ли данные
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count = c.fetchone()[0]
+        
+        conn.close()
+        print(f"✅ БД проверена: {DB_PATH}, записей: {count}")
         return True
-    except:
-        init_db()
-        return True
+    except Exception as e:
+        print(f"❌ Ошибка проверки БД: {e}")
+        return init_db()
 
 # Инициализация БД при запуске
 ensure_db()
@@ -50,11 +100,30 @@ ensure_db()
 # СТУЧАЛКА для uptimerobot
 @app.route('/health')
 def health_check():
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "service": "glucose_tracker"
-    })
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count = c.fetchone()[0]
+        conn.close()
+        
+        return jsonify({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "service": "glucose_tracker",
+            "db_path": DB_PATH,
+            "db_exists": os.path.exists(DB_PATH),
+            "records_count": count
+        })
+    except:
+        return jsonify({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "service": "glucose_tracker",
+            "db_path": DB_PATH,
+            "db_exists": os.path.exists(DB_PATH),
+            "records_count": 0
+        })
 
 @app.route('/')
 def index():
@@ -72,74 +141,152 @@ def dashboard():
 def analytics():
     return render_template('dashboard.html')
 
-# ВАЖНО: Исправленная функция print_report
+# ОСНОВНАЯ ФУНКЦИЯ - ГЕНЕРАЦИЯ ОТЧЕТА
 @app.route('/print_report')
 def print_report():
+    """Генерация печатного отчета с графиком"""
     try:
         ensure_db()
-        conn = sqlite3.connect('glucose.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Получаем данные за последние 30 дней - ВСЕ ЗАПИСИ
+        # Простой и надежный запрос
         c.execute('''
-            SELECT date(created_at) as date, time(created_at) as time, value, note
+            SELECT 
+                value, 
+                COALESCE(note, '') as note,
+                created_at
             FROM measurements 
-            WHERE created_at >= date('now', '-30 days')
-            ORDER BY created_at DESC  # Для таблицы - новые сверху
+            ORDER BY created_at DESC
         ''')
         
-        measurements_for_table = []  # Для таблицы (DESC)
-        measurements_for_chart = []  # Для графика (будем сортировать ASC)
+        measurements_for_table = []  # Для таблицы (первые 30)
+        measurements_for_chart = []  # Для графика (все, отсортированные)
         glucose_values = []
         
         for row in c.fetchall():
-            date, time, value, note = row
-            pressure = note.split('Давление: ')[1] if note and 'Давление:' in note else ''
+            value, note, created_at = row
+            
+            # Парсим дату и время
+            if created_at:
+                try:
+                    dt = datetime.strptime(created_at[:19], '%Y-%m-%d %H:%M:%S')
+                    date_str = dt.strftime('%Y-%m-%d')
+                    time_str = dt.strftime('%H:%M')
+                    timestamp = dt
+                except:
+                    date_str = datetime.now().strftime('%Y-%m-%d')
+                    time_str = datetime.now().strftime('%H:%M')
+                    timestamp = datetime.now()
+            else:
+                date_str = datetime.now().strftime('%Y-%m-%d')
+                time_str = datetime.now().strftime('%H:%M')
+                timestamp = datetime.now()
+            
+            # Извлекаем давление из заметки
+            pressure = ''
+            if note and 'Давление:' in note:
+                try:
+                    pressure_part = note.split('Давление:')[1].strip()
+                    # Ищем числа в формате 130-140 или 130/140
+                    import re
+                    numbers = re.findall(r'\d+', pressure_part)
+                    if numbers:
+                        pressure = '-'.join(numbers[:2]) if len(numbers) >= 2 else numbers[0]
+                except:
+                    pass
             
             # Для таблицы (первые 30 записей)
             if len(measurements_for_table) < 30:
                 measurements_for_table.append({
-                    'date': date,
-                    'time': time,
+                    'date': date_str,
+                    'time': time_str,
                     'value': value,
-                    'pressure': pressure
+                    'pressure': pressure if pressure else '-'
                 })
             
-            # Для графика и статистики (все записи)
+            # Для графика
             measurements_for_chart.append({
-                'date': date,
-                'time': time,
+                'date': date_str,
+                'time': time_str,
                 'value': value,
-                'datetime': f"{date} {time}",
-                'timestamp': datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M:%S")
+                'timestamp': timestamp
             })
             glucose_values.append(value)
         
         conn.close()
         
-        # СОРТИРУЕМ ДЛЯ ГРАФИКА по возрастанию (старые → новые)
-        measurements_for_chart_sorted = sorted(measurements_for_chart, 
-                                              key=lambda x: x['timestamp'])
+        # СОРТИРУЕМ для графика: старые → новые
+        measurements_for_chart.sort(key=lambda x: x['timestamp'])
         
-        # Генерируем график глюкозы
+        # ГЕНЕРАЦИЯ ГРАФИКА
         chart_base64 = ""
-        if measurements_for_chart_sorted:
-            chart_image = create_chart_image(measurements_for_chart_sorted)
-            if chart_image:
-                chart_base64 = base64.b64encode(chart_image).decode('utf-8')
+        if measurements_for_chart:
+            try:
+                # Берем данные для графика (не более 20 точек для читаемости)
+                chart_data = measurements_for_chart[-20:] if len(measurements_for_chart) > 20 else measurements_for_chart
+                
+                # Подготовка данных
+                dates_for_x = []
+                values_for_y = []
+                
+                for m in chart_data:
+                    # Формат: "01.12\n14:30"
+                    date_obj = datetime.strptime(m['date'], '%Y-%m-%d')
+                    date_str = date_obj.strftime('%d.%m')
+                    dates_for_x.append(f"{date_str}\n{m['time']}")
+                    values_for_y.append(m['value'])
+                
+                # Создаем график
+                plt.figure(figsize=(14, 6))
+                
+                # Основная линия
+                plt.plot(values_for_y, marker='o', linewidth=2, markersize=6, 
+                        color='#2c3e50', markerfacecolor='white', markeredgewidth=2)
+                
+                # Настройки графика
+                plt.title('Динамика уровня глюкозы', fontsize=16, fontweight='bold', pad=20)
+                plt.xlabel('Дата и время измерения →', fontsize=12, labelpad=10)
+                plt.ylabel('Глюкоза (mmol/L)', fontsize=12, labelpad=10)
+                plt.grid(True, alpha=0.3, linestyle='--')
+                
+                # Подписи на оси X
+                if len(dates_for_x) > 0:
+                    plt.xticks(range(len(dates_for_x)), dates_for_x, rotation=45, fontsize=10, ha='right')
+                
+                # Целевая зона (норма глюкозы)
+                plt.axhspan(3.9, 5.5, alpha=0.1, color='green')
+                
+                plt.tight_layout()
+                
+                # Конвертация в base64
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+                plt.close()
+                buf.seek(0)
+                chart_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                
+                print(f"✅ График создан, точек: {len(values_for_y)}")
+                
+            except Exception as chart_error:
+                print(f"⚠️  Ошибка создания графика: {chart_error}")
+                chart_base64 = ""
         
-        # Рассчитываем статистику
+        # СТАТИСТИКА
         if glucose_values:
             stats = {
-                'total': len(measurements_for_chart),
+                'total': len(glucose_values),
                 'avg_glucose': sum(glucose_values) / len(glucose_values),
                 'min_glucose': min(glucose_values),
                 'max_glucose': max(glucose_values),
             }
             
-            # Определяем период отчета
-            start_date = measurements_for_chart_sorted[0]['date'] if measurements_for_chart_sorted else datetime.now().strftime('%Y-%m-%d')
-            end_date = measurements_for_chart_sorted[-1]['date'] if measurements_for_chart_sorted else datetime.now().strftime('%Y-%m-%d')
+            # Даты периода
+            if measurements_for_chart:
+                start_date = measurements_for_chart[0]['date']
+                end_date = measurements_for_chart[-1]['date']
+            else:
+                start_date = end_date = datetime.now().strftime('%Y-%m-%d')
         else:
             stats = {
                 'total': 0,
@@ -149,134 +296,71 @@ def print_report():
             }
             start_date = end_date = datetime.now().strftime('%Y-%m-%d')
         
-        # Передаем ВСЕ в шаблон
-        return render_template('print_report.html', 
-                             measurements=measurements_for_table,  # Для таблицы
+        # ВОЗВРАЩАЕМ ОТЧЕТ
+        return render_template('print_report.html',
+                             measurements=measurements_for_table,
                              stats=stats,
                              start_date=start_date,
                              end_date=end_date,
-                             chart_base64=chart_base64)  # График для HTML
+                             chart_base64=chart_base64)
         
     except Exception as e:
-        return f"Ошибка генерации отчета: {str(e)}", 500
+        # Упрощенное сообщение об ошибке
+        error_msg = str(e)[:200]
+        print(f"❌ Ошибка в print_report: {error_msg}")
+        
+        return f'''
+        <div style="padding: 20px; font-family: Arial;">
+            <h2>📊 Отчет по глюкозе</h2>
+            <p>База данных пуста или произошла ошибка.</p>
+            <p><a href="/">Добавить измерения</a></p>
+            <p style="color: #666; font-size: 12px;">Техническая информация: {error_msg}</p>
+        </div>
+        '''
 
-# Функция create_chart_image ОСТАВЛЯЕМ БЕЗ ИЗМЕНЕНИЙ - она уже правильная!
-def create_chart_image(measurements):
-    try:
-        if not measurements:
-            return None
-            
-        # measurements уже отсортированы ASC
-        # Берем последние 20 измерений (уже отсортированных)
-        recent_measurements = measurements[-20:] if len(measurements) > 20 else measurements
-        
-        # Формируем метки дат
-        dates = []
-        for m in recent_measurements:
-            date_obj = datetime.strptime(m['date'], '%Y-%m-%d')
-            date_str = date_obj.strftime('%d.%m')
-            dates.append(f"{date_str}\n{m['time']}")
-        
-        glucose_values = [m['value'] for m in recent_measurements]
-        
-        # Создаем график
-        plt.figure(figsize=(14, 6))
-        
-        # Основная линия графика
-        plt.plot(glucose_values, marker='o', linewidth=2, markersize=6, 
-                color='#2c3e50', markerfacecolor='white', markeredgewidth=2)
-        
-        # Заливка под графиком
-        plt.fill_between(range(len(glucose_values)), glucose_values, 
-                        alpha=0.1, color='#2c3e50')
-        
-        if glucose_values:
-            # Находим min/max
-            min_val = min(glucose_values)
-            max_val = max(glucose_values)
-            min_idx = glucose_values.index(min_val)
-            max_idx = glucose_values.index(max_val)
-            
-            # Подсвечиваем min/max
-            plt.plot(min_idx, min_val, 'go', markersize=10, 
-                    label=f'Min: {min_val}')
-            plt.plot(max_idx, max_val, 'ro', markersize=10, 
-                    label=f'Max: {max_val}')
-        
-        # Настройки графика
-        plt.title('Динамика уровня глюкозы', fontsize=18, fontweight='bold', pad=20)
-        plt.xlabel('Дата и время измерения', fontsize=12, labelpad=10)
-        plt.ylabel('Глюкоза (mmol/L)', fontsize=12, labelpad=10)
-        
-        # Сетка
-        plt.grid(True, alpha=0.2, linestyle='--')
-        
-        # Подписи оси X
-        plt.xticks(range(len(dates)), dates, rotation=45, fontsize=10)
-        
-        # Добавляем метки значений на точках
-        for i, (date, value) in enumerate(zip(dates, glucose_values)):
-            plt.annotate(f'{value:.1f}', 
-                        xy=(i, value),
-                        xytext=(0, 10),
-                        textcoords='offset points',
-                        ha='center',
-                        fontsize=9,
-                        color='#2c3e50')
-        
-        # Легенда
-        plt.legend(loc='upper left', fontsize=10)
-        
-        # Целевые зоны (опционально)
-        plt.axhspan(3.9, 5.5, alpha=0.1, color='green', label='Целевая зона')
-        
-        plt.tight_layout()
-        
-        # Сохраняем
-        img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=150, 
-                   bbox_inches='tight', facecolor='white')
-        plt.close()
-        
-        img_buffer.seek(0)
-        return img_buffer.getvalue()
-        
-    except Exception as e:
-        print(f"❌ Ошибка создания графика: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-# ВСЕ ОСТАЛЬНЫЕ ФУНКЦИИ БЕЗ ИЗМЕНЕНИЙ
+# АПИ ДЛЯ ДОБАВЛЕНИЯ ИЗМЕРЕНИЙ
 @app.route('/api/measurement', methods=['POST'])
 def add_measurement():
+    """Добавление нового измерения"""
     try:
         ensure_db()
         data = request.get_json()
         
-        if not data:
-            return jsonify({'error': 'Пустые данные', 'success': False}), 400
+        if not data or 'value' not in data:
+            return jsonify({'error': 'Нет данных', 'success': False}), 400
             
         value = float(data['value'])
         note = data.get('note', '')
         
-        conn = sqlite3.connect('glucose.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('INSERT INTO measurements (value, note) VALUES (?, ?)', 
                  (value, note))
         conn.commit()
+        
+        # Получаем ID новой записи
+        new_id = c.lastrowid
         conn.close()
         
-        return jsonify({'message': 'Данные сохранены!', 'success': True})
+        print(f"✅ Измерение добавлено: ID={new_id}, value={value}")
+        
+        return jsonify({
+            'message': 'Данные сохранены!', 
+            'success': True,
+            'id': new_id
+        })
         
     except Exception as e:
+        print(f"❌ Ошибка добавления измерения: {e}")
         return jsonify({'error': str(e), 'success': False}), 500
 
+# АПИ ДЛЯ ПОЛУЧЕНИЯ ВСЕХ ИЗМЕРЕНИЙ
 @app.route('/api/measurements')
 def get_measurements():
+    """Получение всех измерений"""
     try:
         ensure_db()
-        conn = sqlite3.connect('glucose.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
             SELECT id, value, note, 
@@ -300,13 +384,16 @@ def get_measurements():
         return jsonify(measurements)
         
     except Exception as e:
+        print(f"❌ Ошибка получения измерений: {e}")
         return jsonify({'error': str(e)}), 500
 
+# АПИ ДЛЯ СКАЧИВАНИЯ ОТЧЕТА
 @app.route('/generate_report')
 def generate_report():
+    """Генерация отчета для скачивания"""
     try:
         ensure_db()
-        conn = sqlite3.connect('glucose.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
             SELECT date(created_at) as date, time(created_at) as time, value, note
@@ -348,12 +435,10 @@ def generate_report():
         return f"Ошибка генерации отчета: {str(e)}", 500
 
 def generate_report_html(measurements, glucose_values):
+    """Генерация HTML для скачиваемого отчета"""
     min_glucose = min(glucose_values) if glucose_values else 0
     max_glucose = max(glucose_values) if glucose_values else 0
     avg_glucose = sum(glucose_values) / len(glucose_values) if glucose_values else 0
-    
-    chart_image = create_chart_image(measurements)
-    chart_base64 = base64.b64encode(chart_image).decode('utf-8') if chart_image else ''
     
     html = f"""
     <!DOCTYPE html>
@@ -370,7 +455,6 @@ def generate_report_html(measurements, glucose_values):
             th {{ background-color: #007cba; color: white; }}
             .min-value {{ color: green; font-weight: bold; }}
             .max-value {{ color: red; font-weight: bold; }}
-            .chart {{ text-align: center; margin: 30px 0; }}
         </style>
     </head>
     <body>
@@ -386,17 +470,7 @@ def generate_report_html(measurements, glucose_values):
             <p><strong>Минимальный уровень:</strong> <span class="min-value">{min_glucose} mmol/L</span></p>
             <p><strong>Максимальный уровень:</strong> <span class="max-value">{max_glucose} mmol/L</span></p>
         </div>
-    """
-    
-    if chart_base64:
-        html += f"""
-        <div class="chart">
-            <h3>📉 Динамика уровня глюкозы</h3>
-            <img src="data:image/png;base64,{chart_base64}" alt="График глюкозы" style="max-width: 100%;">
-        </div>
-        """
-    
-    html += """
+        
         <h3>📋 Детальные измерения</h3>
         <table>
             <thead>
@@ -435,7 +509,106 @@ def generate_report_html(measurements, glucose_values):
     
     return html
 
+# ФУНКЦИЯ ДЛЯ ВОССТАНОВЛЕНИЯ БАЗЫ (если что-то сломалось)
+@app.route('/admin/fix_database')
+def fix_database():
+    """Восстановление базы данных если возникли проблемы"""
+    try:
+        print("🔄 Запуск восстановления базы данных...")
+        
+        # 1. Делаем резервную копию если файл существует
+        backup_path = None
+        if os.path.exists(DB_PATH):
+            backup_path = f"{DB_PATH}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            import shutil
+            shutil.copy2(DB_PATH, backup_path)
+            print(f"✅ Создана резервная копия: {backup_path}")
+        
+        # 2. Пересоздаем базу
+        result = init_db()
+        
+        response = {
+            "success": result,
+            "message": "База данных восстановлена" if result else "Ошибка восстановления",
+            "db_path": DB_PATH,
+            "backup_created": backup_path is not None,
+            "backup_path": backup_path
+        }
+        
+        print(f"✅ Восстановление завершено: {response}")
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        print(f"❌ Ошибка восстановления БД: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ИНФОРМАЦИЯ О БАЗЕ
+@app.route('/admin/db_info')
+def db_info():
+    """Информация о базе данных"""
+    try:
+        ensure_db()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        info = {
+            "db_path": DB_PATH,
+            "db_size": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+            "db_exists": os.path.exists(DB_PATH),
+            "tables": [],
+            "record_count": 0,
+            "last_records": []
+        }
+        
+        # Таблицы
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        info["tables"] = [row[0] for row in c.fetchall()]
+        
+        # Количество записей
+        if 'measurements' in info["tables"]:
+            c.execute("SELECT COUNT(*) FROM measurements")
+            info["record_count"] = c.fetchone()[0]
+            
+            # Последние 5 записей
+            c.execute("SELECT value, note, created_at FROM measurements ORDER BY id DESC LIMIT 5")
+            info["last_records"] = c.fetchall()
+        
+        conn.close()
+        
+        # Форматируем ответ
+        html = f"""
+        <h2>Информация о базе данных</h2>
+        <p><strong>Путь:</strong> {info['db_path']}</p>
+        <p><strong>Размер:</strong> {info['db_size']} байт</p>
+        <p><strong>Существует:</strong> {'Да' if info['db_exists'] else 'Нет'}</p>
+        <p><strong>Таблицы:</strong> {', '.join(info['tables'])}</p>
+        <p><strong>Записей в measurements:</strong> {info['record_count']}</p>
+        """
+        
+        if info['last_records']:
+            html += "<h3>Последние записи:</h3><ul>"
+            for value, note, created_at in info['last_records']:
+                html += f"<li>{value} mmol/L | {note or 'нет заметки'} | {created_at}</li>"
+            html += "</ul>"
+        
+        html += f"""
+        <p><a href="/">На главную</a></p>
+        <p><a href="/admin/fix_database">Восстановить базу</a> (осторожно!)</p>
+        """
+        
+        return html
+        
+    except Exception as e:
+        return f"Ошибка получения информации: {str(e)}"
+
 if __name__ == '__main__':
+    print("=" * 50)
+    print("🚀 Запуск Glucose Tracker")
+    print(f"📁 База данных: {DB_PATH}")
+    print(f"📊 Путь существует: {os.path.exists(DB_PATH)}")
+    print("=" * 50)
+    
     ensure_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
