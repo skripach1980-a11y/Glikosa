@@ -93,7 +93,130 @@ def ensure_db():
     except Exception as e:
         print(f"❌ Ошибка проверки БД: {e}")
         return init_db()
-
+# ДОБАВЬ ЭТУ ФУНКЦИЮ в app.py после ensure_db()
+@app.route('/admin/setup_test_data')
+def setup_test_data():
+    """Установка тестовых данных через браузер"""
+    try:
+        import sqlite3
+        from datetime import datetime
+        
+        print(f"🔄 Установка тестовых данных в {DB_PATH}")
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Проверяем есть ли данные
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count_before = c.fetchone()[0]
+        
+        # Удаляем старые если есть
+        if count_before > 0:
+            c.execute("DELETE FROM measurements")
+            print(f"🧹 Удалено {count_before} старых записей")
+        
+        # Добавляем твои данные
+        test_data = [
+            (6.4, 'Давление: 130-140', '2024-11-29 10:00:00'),
+            (6.9, 'Давление: 130-140', '2024-11-30 10:00:00'),
+            (6.8, 'Давление: 130-140', '2024-12-01 10:00:00'),
+        ]
+        
+        c.executemany(
+            "INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)", 
+            test_data
+        )
+        
+        conn.commit()
+        
+        # Проверяем
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count_after = c.fetchone()[0]
+        
+        # Получаем добавленные данные
+        c.execute("""
+            SELECT date(created_at) as date, time(created_at) as time, value, note 
+            FROM measurements ORDER BY created_at
+        """)
+        
+        added_data = []
+        for row in c.fetchall():
+            added_data.append({
+                'date': row[0],
+                'time': row[1], 
+                'value': row[2],
+                'note': row[3]
+            })
+        
+        conn.close()
+        
+        print(f"✅ Добавлено {count_after} записей")
+        
+        # Формируем HTML ответ
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Данные установлены</title>
+            <style>
+                body {{ font-family: Arial; padding: 20px; }}
+                .success {{ color: green; font-weight: bold; }}
+                table {{ border-collapse: collapse; margin: 20px 0; }}
+                th, td {{ border: 1px solid #ddd; padding: 8px; }}
+                th {{ background: #f5f5f5; }}
+            </style>
+        </head>
+        <body>
+            <h1 class="success">✅ Тестовые данные установлены!</h1>
+            <p>Было записей: {count_before}</p>
+            <p>Стало записей: {count_after}</p>
+            
+            <h2>Добавленные измерения:</h2>
+            <table>
+                <tr><th>Дата</th><th>Время</th><th>Глюкоза</th><th>Примечание</th></tr>
+        """
+        
+        for data in added_data:
+            html += f"""
+                <tr>
+                    <td>{data['date']}</td>
+                    <td>{data['time']}</td>
+                    <td>{data['value']} mmol/L</td>
+                    <td>{data['note']}</td>
+                </tr>
+            """
+        
+        html += f"""
+            </table>
+            
+            <div style="margin-top: 30px;">
+                <a href="/print_report" style="background: #007cba; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
+                    📊 Посмотреть отчет
+                </a>
+                <a href="/admin/db_info" style="margin-left: 10px; padding: 10px 20px; border: 1px solid #ccc; text-decoration: none; border-radius: 5px;">
+                    📋 Информация о БД
+                </a>
+            </div>
+            
+            <p style="margin-top: 30px; color: #666; font-size: 12px;">
+                Путь к БД: {DB_PATH}<br>
+                Время выполнения: {datetime.now().strftime('%H:%M:%S')}
+            </p>
+        </body>
+        </html>
+        """
+        
+        return html
+        
+    except Exception as e:
+        error_html = f"""
+        <h1 style="color: red;">❌ Ошибка установки данных</h1>
+        <p>{str(e)}</p>
+        <p>Путь к БД: {DB_PATH}</p>
+        <p>Файл существует: {'Да' if os.path.exists(DB_PATH) else 'Нет'}</p>
+        <a href="/">На главную</a>
+        """
+        return error_html
 # Инициализация БД при запуске
 ensure_db()
 
