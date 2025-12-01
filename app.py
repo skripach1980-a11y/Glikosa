@@ -329,32 +329,81 @@ def create_chart_image(measurements):
         if not measurements:
             return None
             
-        recent_measurements = measurements[:20]
-        dates = [f"{m['date']}\n{m['time']}" for m in recent_measurements]
+        # ВАЖНО: отсортировать по возрастанию даты!
+        # measurements уже отсортированы DESC, нужно перевернуть
+        sorted_measurements = sorted(measurements, 
+                                   key=lambda x: (x['date'], x['time']))
+        
+        # Берем последние 20 измерений (уже отсортированных)
+        recent_measurements = sorted_measurements[-20:] if len(sorted_measurements) > 20 else sorted_measurements
+        
+        # Формируем метки дат
+        dates = []
+        for m in recent_measurements:
+            # Более читаемый формат даты
+            date_obj = datetime.strptime(m['date'], '%Y-%m-%d')
+            date_str = date_obj.strftime('%d.%m')
+            dates.append(f"{date_str}\n{m['time']}")
+        
         glucose_values = [m['value'] for m in recent_measurements]
         
-        plt.figure(figsize=(12, 6))
-        plt.plot(glucose_values, marker='o', linewidth=2, markersize=4, color='#2c3e50')
+        # Создаем график
+        plt.figure(figsize=(14, 6))
+        
+        # Основная линия графика
+        plt.plot(glucose_values, marker='o', linewidth=2, markersize=6, 
+                color='#2c3e50', markerfacecolor='white', markeredgewidth=2)
+        
+        # Заливка под графиком
+        plt.fill_between(range(len(glucose_values)), glucose_values, 
+                        alpha=0.1, color='#2c3e50')
         
         if glucose_values:
+            # Находим min/max
             min_val = min(glucose_values)
             max_val = max(glucose_values)
             min_idx = glucose_values.index(min_val)
             max_idx = glucose_values.index(max_val)
             
-            plt.plot(min_idx, min_val, 'go', markersize=8, label='Min')
-            plt.plot(max_idx, max_val, 'ro', markersize=8, label='Max')
+            # Подсвечиваем min/max
+            plt.plot(min_idx, min_val, 'go', markersize=10, 
+                    label=f'Min: {min_val}')
+            plt.plot(max_idx, max_val, 'ro', markersize=10, 
+                    label=f'Max: {max_val}')
         
-        plt.title('Динамика уровня глюкозы', fontsize=16, fontweight='bold')
-        plt.xlabel('Измерения')
-        plt.ylabel('Глюкоза (mmol/L)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.xticks(range(len(dates)), dates, rotation=45)
+        # Настройки графика
+        plt.title('Динамика уровня глюкозы', fontsize=18, fontweight='bold', pad=20)
+        plt.xlabel('Дата и время измерения', fontsize=12, labelpad=10)
+        plt.ylabel('Глюкоза (mmol/L)', fontsize=12, labelpad=10)
+        
+        # Сетка
+        plt.grid(True, alpha=0.2, linestyle='--')
+        
+        # Подписи оси X
+        plt.xticks(range(len(dates)), dates, rotation=45, fontsize=10)
+        
+        # Добавляем метки значений на точках
+        for i, (date, value) in enumerate(zip(dates, glucose_values)):
+            plt.annotate(f'{value:.1f}', 
+                        xy=(i, value),
+                        xytext=(0, 10),
+                        textcoords='offset points',
+                        ha='center',
+                        fontsize=9,
+                        color='#2c3e50')
+        
+        # Легенда
+        plt.legend(loc='upper left', fontsize=10)
+        
+        # Целевые зоны (опционально)
+        plt.axhspan(3.9, 5.5, alpha=0.1, color='green', label='Целевая зона')
+        
         plt.tight_layout()
         
+        # Сохраняем
         img_buffer = io.BytesIO()
-        plt.savefig(img_buffer, format='png', dpi=150, bbox_inches='tight')
+        plt.savefig(img_buffer, format='png', dpi=150, 
+                   bbox_inches='tight', facecolor='white')
         plt.close()
         
         img_buffer.seek(0)
@@ -362,8 +411,9 @@ def create_chart_image(measurements):
         
     except Exception as e:
         print(f"❌ Ошибка создания графика: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
-
 if __name__ == '__main__':
     ensure_db()
     port = int(os.environ.get('PORT', 5000))
