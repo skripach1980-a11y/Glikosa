@@ -8,9 +8,18 @@ matplotlib.use('Agg')
 import base64
 import re
 import sqlite3
+import requests
+import json
+import threading
+import time
 
 app = Flask(__name__)
 app.template_folder = '.'
+
+# === ТВОИ НАСТРОЙКИ TELEGRAM ===
+BOT_TOKEN = "8202623703:AAHReI5nLyAzDB6a0y3Dus9nUYJrQmuhT9I"
+CHAT_ID = "2108365479"
+# ===============================
 
 # Используем SQLite в постоянной папке
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glucose.db')
@@ -89,7 +98,8 @@ def health_check():
             "db_path": DB_PATH,
             "db_exists": os.path.exists(DB_PATH),
             "records_count": count,
-            "python_version": os.sys.version
+            "python_version": os.sys.version,
+            "telegram_bot": "configured" if BOT_TOKEN else "not_configured"
         })
     except Exception as e:
         return jsonify({
@@ -122,6 +132,24 @@ def add_measurement():
         
         c.close()
         conn.close()
+        
+        # Отправляем уведомление в Telegram о новой записи
+        try:
+            message = f"📝 *Новая запись глюкозы*\n\n"
+            message += f"📊 Значение: *{value} mmol/L*\n"
+            if note:
+                message += f"📝 Примечание: {note}\n"
+            message += f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': CHAT_ID,
+                'text': message,
+                'parse_mode': 'Markdown'
+            }
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass  # Игнорируем ошибки Telegram
         
         return jsonify({
             'message': '✅ Данные сохранены!',
@@ -405,6 +433,24 @@ def setup_test_data():
         conn.commit()
         conn.close()
         
+        # Отправляем уведомление
+        try:
+            message = "✅ *Тестовые данные добавлены!*\n\n"
+            message += "📅 29.11.2024: 6.4 mmol/L\n"
+            message += "📅 30.11.2024: 6.9 mmol/L\n"
+            message += "📅 01.12.2024: 6.8 mmol/L\n\n"
+            message += f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': CHAT_ID,
+                'text': message,
+                'parse_mode': 'Markdown'
+            }
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass
+        
         return '''
         <!DOCTYPE html>
         <html>
@@ -416,10 +462,12 @@ def setup_test_data():
                 .data-item { margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px; }
                 .button { display: inline-block; background: #3498db; color: white; padding: 12px 24px; 
                          text-decoration: none; border-radius: 5px; margin: 10px 5px; }
+                .telegram { background: #0088cc; }
             </style>
         </head>
         <body>
             <h1 class="success">✅ Тестовые данные добавлены!</h1>
+            <p>📱 Уведомление отправлено в Telegram</p>
             
             <h3>Добавленные измерения:</h3>
             <div class="data-item">📅 <strong>29 ноября 10:00</strong> - Глюкоза: 6.4 mmol/L, Давление: 130-140</div>
@@ -427,13 +475,10 @@ def setup_test_data():
             <div class="data-item">📅 <strong>1 декабря 10:00</strong> - Глюкоза: 6.8 mmol/L, Давление: 130-140</div>
             
             <div style="margin-top: 30px;">
-                <a href="/print_report" class="button">📊 Посмотреть отчет с графиками</a>
-                <a href="/" class="button" style="background: #95a5a6;">➕ Добавить новые измерения</a>
+                <a href="/print_report" class="button">📊 Отчет с графиками</a>
+                <a href="/admin/backup_to_telegram" class="button telegram">🤖 Отправить бэкап в Telegram</a>
+                <a href="/" class="button" style="background: #95a5a6;">➕ Добавить данные</a>
             </div>
-            
-            <p style="margin-top: 20px; color: #27ae60; font-weight: bold;">
-                ✅ Данные сохраняются в SQLite (файл: glucose.db)
-            </p>
         </body>
         </html>
         '''
@@ -445,6 +490,220 @@ def setup_test_data():
         <a href="/">На главную</a>
         '''
 
+# Telegram функции
+@app.route('/admin/backup_to_telegram')
+def backup_to_telegram():
+    """Отправить бэкап данных в Telegram"""
+    try:
+        # === ПОДГОТОВКА ДАННЫХ ===
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Получаем статистику
+        c.execute("SELECT COUNT(*) as count FROM measurements")
+        count = c.fetchone()['count']
+        
+        c.execute("""
+            SELECT MIN(datetime(created_at)) as first_date,
+                   MAX(datetime(created_at)) as last_date,
+                   ROUND(AVG(value), 1) as avg_value,
+                   MIN(value) as min_value,
+                   MAX(value) as max_value
+            FROM measurements
+        """)
+        stats = c.fetchone()
+        
+        # Получаем последние 5 записей
+        c.execute('''
+            SELECT value, note, datetime(created_at) as created_at 
+            FROM measurements 
+            ORDER BY created_at DESC
+            LIMIT 5
+        ''')
+        recent_data = c.fetchall()
+        
+        conn.close()
+        
+        # === 1. ОТПРАВКА СТАТИСТИКИ ===
+        message = f"""
+📊 *Бэкап данных глюкозы*
+
+📅 *Период:* {stats['first_date'][:10] if stats['first_date'] else 'Нет данных'} — {stats['last_date'][:10] if stats['last_date'] else 'Нет данных'}
+📈 *Всего записей:* {count}
+
+📉 *Статистика:*
+• Среднее: {stats['avg_value'] or 0} mmol/L
+• Минимум: {stats['min_value'] or 0} mmol/L
+• Максимум: {stats['max_value'] or 0} mmol/L
+
+📋 *Последние записи:*
+"""
+        
+        for row in recent_data:
+            created_at = row['created_at']
+            date_str = created_at[:10]
+            time_str = created_at[11:16]
+            note = f" ({row['note']})" if row['note'] else ""
+            message += f"• {date_str} {time_str}: {row['value']} mmol/L{note}\n"
+        
+        message += f"\n🔄 *Автоматический бэкап*\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        
+        # Отправляем сообщение
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': CHAT_ID,
+            'text': message,
+            'parse_mode': 'Markdown',
+            'disable_web_page_preview': True
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code != 200:
+            return f"❌ Ошибка отправки сообщения: {response.text}<br><a href='/'>На главную</a>"
+        
+        # === 2. ОТПРАВКА ФАЙЛА БАЗЫ ===
+        if count > 0 and os.path.exists(DB_PATH):
+            # Отправляем .db файл
+            with open(DB_PATH, 'rb') as db_file:
+                files = {'document': db_file}
+                data = {'chat_id': CHAT_ID}
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+                
+                response = requests.post(url, files=files, data=data, timeout=30)
+                
+                if response.status_code != 200:
+                    return f"❌ Ошибка отправки файла: {response.text}<br><a href='/'>На главную</a>"
+        
+        # === 3. ОТПРАВКА JSON ДАННЫХ ===
+        if count > 0:
+            # Экспортируем все данные в JSON
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute('SELECT * FROM measurements')
+            data = []
+            for row in c.fetchall():
+                data.append(dict(row))
+            conn.close()
+            
+            # Сохраняем временный JSON файл
+            import tempfile
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            json.dump(data, temp_file, ensure_ascii=False, indent=2, default=str)
+            temp_file.close()
+            
+            # Отправляем JSON файл
+            with open(temp_file.name, 'rb') as f:
+                files = {'document': f}
+                data = {'chat_id': CHAT_ID}
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+                response = requests.post(url, files=files, data=data, timeout=30)
+            
+            # Удаляем временный файл
+            os.unlink(temp_file.name)
+            
+            if response.status_code != 200:
+                return f"❌ Ошибка отправки JSON: {response.text}<br><a href='/'>На главную</a>"
+        
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>✅ Бэкап отправлен</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 40px; text-align: center; }
+                .success { color: #27ae60; font-size: 24px; margin: 20px 0; }
+                .button { 
+                    display: inline-block; 
+                    background: #3498db; 
+                    color: white; 
+                    padding: 15px 30px; 
+                    text-decoration: none; 
+                    border-radius: 8px; 
+                    margin: 10px; 
+                    font-size: 16px;
+                }
+                .telegram { background: #0088cc; }
+                .stats { 
+                    background: #f8f9fa; 
+                    padding: 20px; 
+                    border-radius: 10px; 
+                    margin: 20px auto; 
+                    max-width: 500px; 
+                    text-align: left;
+                }
+            </style>
+        </head>
+        <body>
+            <h1 class="success">✅ Бэкап отправлен в Telegram!</h1>
+            <p>📱 Проверь свой Telegram аккаунт</p>
+            
+            <div style="margin-top: 30px;">
+                <a href="/admin/backup_to_telegram" class="button telegram">🔄 Отправить ещё раз</a>
+                <a href="/admin/backup" class="button">📥 Скачать вручную</a>
+                <a href="/" class="button">🏠 На главную</a>
+            </div>
+            
+            <p style="margin-top: 30px; color: #7f8c8d;">
+                ⏰ Следующий автоматический бэкап будет в 21:00
+            </p>
+        </body>
+        </html>
+        '''
+        
+    except Exception as e:
+        import traceback
+        return f'''
+        <h1 style="color: #e74c3c;">❌ Ошибка отправки в Telegram</h1>
+        <pre>{str(e)}</pre>
+        <h3>🔧 Проверь:</h3>
+        <ol>
+            <li>Бот запущен (@BotFather → /mybots)?</li>
+            <li>Ты написал боту в ЛС "Привет"?</li>
+            <li>Chat ID правильный? (2108365479)</li>
+        </ol>
+        <a href="/">На главную</a>
+        '''
+
+@app.route('/admin/test_telegram')
+def test_telegram():
+    """Тестовая отправка сообщения"""
+    try:
+        message = "✅ *Глюкоза Трекер работает!*\n\n"
+        message += "🤖 Бот настроен корректно\n"
+        message += "📊 Все функции доступны\n"
+        message += f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            'chat_id': CHAT_ID,
+            'text': message,
+            'parse_mode': 'Markdown'
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            return '''
+            <h1 style="color: #27ae60;">✅ Тест успешен!</h1>
+            <p>Сообщение отправлено в Telegram.</p>
+            <p>Проверь свой Telegram аккаунт.</p>
+            <p><a href="/admin/backup_to_telegram">📊 Отправить полный бэкап</a></p>
+            '''
+        else:
+            return f'''
+            <h1 style="color: #e74c3c;">❌ Ошибка</h1>
+            <pre>{response.text}</pre>
+            <p>Проверь настройки бота.</p>
+            '''
+            
+    except Exception as e:
+        return f'''
+        <h1>❌ Ошибка</h1>
+        <pre>{str(e)}</pre>
+        '''
+
+# Админ функции
 @app.route('/admin/db_status')
 def db_status():
     """Проверка статуса базы данных"""
@@ -468,7 +727,8 @@ def db_status():
             "file_size": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
             "total_records": result['total_records'],
             "last_record": result['last_record'] if result['last_record'] else "Нет данных",
-            "first_record": result['first_record'] if result['first_record'] else "Нет данных"
+            "first_record": result['first_record'] if result['first_record'] else "Нет данных",
+            "telegram_bot": "настроен" if BOT_TOKEN and CHAT_ID else "не настроен"
         }
         
         conn.close()
@@ -495,11 +755,123 @@ def backup_database():
         download_name=f'glucose_backup_{timestamp}.db'
     )
 
+@app.route('/admin/simple_backup')
+def simple_backup():
+    """Простой интерфейс для бэкапов"""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM measurements")
+        count = c.fetchone()['count']
+        conn.close()
+        
+        return f'''
+        <!DOCTYPE html>
+        <html>
+        <head><title>Бэкап данных</title></head>
+        <body style="font-family: Arial; padding: 20px;">
+            <h1>📊 Бэкап данных глюкозы</h1>
+            <p>Всего записей: <strong>{count}</strong></p>
+            
+            <div style="margin: 20px 0;">
+                <a href="/admin/backup_to_telegram" style="
+                    display: inline-block;
+                    background: #0088cc;
+                    color: white;
+                    padding: 15px 30px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-size: 18px;
+                    margin: 10px;
+                ">
+                    🤖 Отправить в Telegram
+                </a>
+            </div>
+            
+            <div style="margin: 20px 0;">
+                <a href="/admin/backup" style="
+                    display: inline-block;
+                    background: #3498db;
+                    color: white;
+                    padding: 15px 30px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-size: 18px;
+                    margin: 10px;
+                ">
+                    📥 Скачать базу (.db)
+                </a>
+            </div>
+            
+            <div style="margin: 20px 0;">
+                <a href="/api/measurements" style="
+                    display: inline-block;
+                    background: #2ecc71;
+                    color: white;
+                    padding: 15px 30px;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-size: 18px;
+                    margin: 10px;
+                ">
+                    📄 Скачать JSON
+                </a>
+            </div>
+            
+            <h3>📋 Рекомендация:</h3>
+            <p>1. <strong>Каждый день</strong> заходи на эту страницу</p>
+            <p>2. Нажимай "🤖 Отправить в Telegram"</p>
+            <p>3. Данные сохранятся в твоем Telegram</p>
+            
+            <p style="color: #e74c3c; font-weight: bold; margin-top: 20px;">
+                ⚠️ На бесплатном Render данные могут удалиться в любой момент!
+                Делай бэкапы регулярно!
+            </p>
+        </body>
+        </html>
+        '''
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# Автоматический бэкап
+def auto_backup_daily():
+    """Ежедневный автоматический бэкап в 21:00"""
+    while True:
+        try:
+            now = datetime.now()
+            
+            # Проверяем время каждый час
+            if now.hour == 21 and now.minute == 0:
+                print(f"⏰ {now.strftime('%H:%M')} - Отправляю ежедневный бэкап...")
+                
+                try:
+                    # Отправляем бэкап
+                    requests.get("https://glikosa.onrender.com/admin/backup_to_telegram", timeout=30)
+                    print("✅ Ежедневный бэкап отправлен")
+                except Exception as e:
+                    print(f"⚠️ Ошибка авто-бэкапа: {e}")
+                
+                # Ждем 61 минуту чтобы не отправить дважды
+                time.sleep(3660)
+            else:
+                # Проверяем каждую минуту
+                time.sleep(60)
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка в авто-бэкапе: {e}")
+            time.sleep(300)
+
+# Запускаем авто-бэкап в отдельном потоке
 if __name__ == '__main__':
+    # Запускаем авто-бэкап
+    backup_thread = threading.Thread(target=auto_backup_daily, daemon=True)
+    backup_thread.start()
+    
     print("=" * 60)
     print("🚀 GLIKOSA Tracker запущен!")
-    print(f"📊 База данных: SQLite")
-    print(f"📁 Файл базы: {DB_PATH}")
+    print(f"📊 База данных: SQLite ({DB_PATH})")
+    print(f"🤖 Telegram бот: настроен (chat_id: {CHAT_ID})")
+    print("⏰ Авто-бэкап: каждый день в 21:00")
     print("=" * 60)
     
     port = int(os.environ.get('PORT', 5000))
