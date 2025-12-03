@@ -7,71 +7,51 @@ import matplotlib
 matplotlib.use('Agg')
 import base64
 import re
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import sqlite3
 
 app = Flask(__name__)
 app.template_folder = '.'
 
-# Ваша строка подключения PostgreSQL
-DATABASE_URL = "postgresql://glikosa_user:o88hNjd91vCsLFcpbp9ZeAWSPo5syzfI@dpg-d4o9onidbo4c73et3b40-a/glikosa_bd"
-
-# Подключение к PostgreSQL
-def get_db_connection():
-    """Получить подключение к базе данных"""
-    try:
-        # Используем вашу строку подключения
-        conn = psycopg2.connect(
-            DATABASE_URL,
-            cursor_factory=RealDictCursor
-        )
-        return conn, 'postgres'
-    except Exception as e:
-        print(f"⚠️ Ошибка подключения к PostgreSQL: {e}")
-        print("🔄 Пробуем SQLite как запасной вариант...")
-        
-        try:
-            import sqlite3
-            conn = sqlite3.connect('glucose.db')
-            return conn, 'sqlite'
-        except:
-            raise Exception(f"Не удалось подключиться ни к одной БД: {e}")
+# Используем SQLite в постоянной папке
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glucose.db')
+print(f"✅ Используем БД: {DB_PATH}")
 
 def init_db():
     """Инициализация базы данных"""
     try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         
-        if db_type == 'postgres':
-            # Создаем таблицу для PostgreSQL
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS measurements (
-                    id SERIAL PRIMARY KEY,
-                    value DECIMAL NOT NULL,
-                    note TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            print("✅ Таблица measurements создана/проверена в PostgreSQL")
-        else:
-            # Для SQLite
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS measurements
-                (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 value REAL NOT NULL,
-                 note TEXT,
-                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
-            ''')
-            print("✅ Таблица measurements создана/проверена в SQLite")
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS measurements
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             value REAL NOT NULL,
+             note TEXT,
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        # Создаем индекс для быстрого поиска по дате
+        c.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON measurements(created_at)')
         
         conn.commit()
-        cur.close()
+        
+        # Проверяем что таблица создана
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count = c.fetchone()[0]
+        
         conn.close()
+        print(f"✅ База создана/проверена: {DB_PATH}, записей: {count}")
         return True
     except Exception as e:
-        print(f"❌ Ошибка инициализации БД: {e}")
+        print(f"❌ Ошибка создания БД: {e}")
         return False
+
+def get_db_connection():
+    """Получить подключение к SQLite"""
+    conn = sqlite3.connect(DB_PATH)
+    # Включаем поддержку словарей
+    conn.row_factory = sqlite3.Row
+    return conn
 
 # Инициализация при старте
 init_db()
@@ -92,6 +72,32 @@ def dashboard():
 def analytics():
     return render_template('dashboard.html')
 
+@app.route('/health')
+def health_check():
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM measurements")
+        count = c.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "service": "glucose_tracker",
+            "db_path": DB_PATH,
+            "db_exists": os.path.exists(DB_PATH),
+            "records_count": count,
+            "python_version": os.sys.version
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        })
+
 # API для работы с данными
 @app.route('/api/measurement', methods=['POST'])
 def add_measurement():
@@ -104,28 +110,21 @@ def add_measurement():
         value = float(data['value'])
         note = data.get('note', '')
         
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
-        
-        if db_type == 'postgres':
-            cur.execute(
-                'INSERT INTO measurements (value, note) VALUES (%s, %s) RETURNING id',
-                (value, note)
-            )
-            inserted_id = cur.fetchone()['id']
-        else:
-            cur.execute(
-                'INSERT INTO measurements (value, note) VALUES (?, ?)',
-                (value, note)
-            )
-            inserted_id = cur.lastrowid
-        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute(
+            'INSERT INTO measurements (value, note) VALUES (?, ?)',
+            (value, note)
+        )
         conn.commit()
-        cur.close()
+        
+        inserted_id = c.lastrowid
+        
+        c.close()
         conn.close()
         
         return jsonify({
-            'message': '✅ Данные сохранены в PostgreSQL!',
+            'message': '✅ Данные сохранены!',
             'success': True,
             'id': inserted_id
         })
@@ -136,47 +135,27 @@ def add_measurement():
 @app.route('/api/measurements')
 def get_measurements():
     try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db_connection()
+        c = conn.cursor()
         
-        if db_type == 'postgres':
-            cur.execute('''
-                SELECT id, value, note, 
-                       to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at 
-                FROM measurements 
-                ORDER BY created_at DESC
-            ''')
-            rows = cur.fetchall()
-            measurements = []
-            for row in rows:
-                measurements.append({
-                    'id': row['id'],
-                    'value': float(row['value']),
-                    'note': row['note'] or '',
-                    'created_at': row['created_at'],
-                    'date': row['created_at'][:10],
-                    'time': row['created_at'][11:16]
-                })
-        else:
-            cur.execute('''
-                SELECT id, value, note, 
-                       datetime(created_at) as created_at 
-                FROM measurements 
-                ORDER BY created_at DESC
-            ''')
-            rows = cur.fetchall()
-            measurements = []
-            for row in rows:
-                measurements.append({
-                    'id': row[0],
-                    'value': float(row[1]),
-                    'note': row[2] or '',
-                    'created_at': row[3],
-                    'date': row[3][:10],
-                    'time': row[3][11:16]
-                })
+        c.execute('''
+            SELECT id, value, note, 
+                   datetime(created_at) as created_at 
+            FROM measurements 
+            ORDER BY created_at DESC
+        ''')
         
-        cur.close()
+        measurements = []
+        for row in c.fetchall():
+            measurements.append({
+                'id': row['id'],
+                'value': row['value'],
+                'note': row['note'] or '',
+                'created_at': row['created_at'],
+                'date': row['created_at'][:10],
+                'time': row['created_at'][11:16]
+            })
+        
         conn.close()
         return jsonify(measurements)
         
@@ -242,43 +221,26 @@ def create_pressure_chart(measurements):
 def print_report():
     """Генерация печатного отчета"""
     try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db_connection()
+        c = conn.cursor()
         
-        if db_type == 'postgres':
-            cur.execute('''
-                SELECT 
-                    value, 
-                    COALESCE(note, '') as note,
-                    to_char(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at
-                FROM measurements 
-                ORDER BY created_at DESC
-            ''')
-            rows = cur.fetchall()
-        else:
-            cur.execute('''
-                SELECT 
-                    value, 
-                    COALESCE(note, '') as note,
-                    created_at
-                FROM measurements 
-                ORDER BY created_at DESC
-            ''')
-            rows = cur.fetchall()
+        c.execute('''
+            SELECT 
+                value, 
+                COALESCE(note, '') as note,
+                datetime(created_at) as created_at
+            FROM measurements 
+            ORDER BY created_at DESC
+        ''')
         
         measurements_for_table = []
         measurements_for_chart = []
         glucose_values = []
         
-        for row in rows:
-            if db_type == 'postgres':
-                value = float(row['value'])
-                note = row['note']
-                created_at = row['created_at']
-            else:
-                value = float(row[0])
-                note = row[1]
-                created_at = row[2]
+        for row in c.fetchall():
+            value = float(row['value'])
+            note = row['note']
+            created_at = row['created_at']
             
             # Парсим дату
             try:
@@ -322,7 +284,6 @@ def print_report():
             })
             glucose_values.append(value)
         
-        cur.close()
         conn.close()
         
         # Сортировка для графиков
@@ -418,16 +379,16 @@ def print_report():
         </div>
         '''
 
-# Тестовые данные для PostgreSQL
+# Тестовые данные
 @app.route('/admin/setup_test_data')
 def setup_test_data():
     """Добавить тестовые данные"""
     try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db_connection()
+        c = conn.cursor()
         
         # Очищаем старые данные
-        cur.execute("DELETE FROM measurements")
+        c.execute("DELETE FROM measurements")
         
         # Тестовые данные
         test_data = [
@@ -436,20 +397,12 @@ def setup_test_data():
             (6.8, 'Давление: 130-140', '2024-12-01 10:00:00'),
         ]
         
-        if db_type == 'postgres':
-            for data in test_data:
-                cur.execute(
-                    "INSERT INTO measurements (value, note, created_at) VALUES (%s, %s, %s)",
-                    data
-                )
-        else:
-            cur.executemany(
-                "INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)", 
-                test_data
-            )
+        c.executemany(
+            "INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)", 
+            test_data
+        )
         
         conn.commit()
-        cur.close()
         conn.close()
         
         return '''
@@ -466,7 +419,7 @@ def setup_test_data():
             </style>
         </head>
         <body>
-            <h1 class="success">✅ Данные добавлены в PostgreSQL!</h1>
+            <h1 class="success">✅ Тестовые данные добавлены!</h1>
             
             <h3>Добавленные измерения:</h3>
             <div class="data-item">📅 <strong>29 ноября 10:00</strong> - Глюкоза: 6.4 mmol/L, Давление: 130-140</div>
@@ -479,7 +432,7 @@ def setup_test_data():
             </div>
             
             <p style="margin-top: 20px; color: #27ae60; font-weight: bold;">
-                ✅ Теперь данные сохраняются в PostgreSQL и не будут удаляться!
+                ✅ Данные сохраняются в SQLite (файл: glucose.db)
             </p>
         </body>
         </html>
@@ -492,94 +445,61 @@ def setup_test_data():
         <a href="/">На главную</a>
         '''
 
-@app.route('/health')
-def health_check():
-    try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) as count FROM measurements")
-        result = cur.fetchone()
-        
-        count = result['count'] if db_type == 'postgres' else result[0]
-        
-        cur.close()
-        conn.close()
-        
-        return jsonify({
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "database": "PostgreSQL",
-            "database_url": "postgresql://glikosa_user:*****@dpg-d4o9onidbo4c73et3b40-a/glikosa_bd",
-            "records_count": count
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "timestamp": datetime.now().isoformat(),
-            "error": str(e)
-        })
-
 @app.route('/admin/db_status')
 def db_status():
     """Проверка статуса базы данных"""
     try:
-        conn, db_type = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db_connection()
+        c = conn.cursor()
         
         # Проверяем таблицу
-        if db_type == 'postgres':
-            cur.execute("""
-                SELECT 
-                    (SELECT COUNT(*) FROM measurements) as total_records,
-                    (SELECT MAX(created_at) FROM measurements) as last_record,
-                    (SELECT MIN(created_at) FROM measurements) as first_record,
-                    version() as postgres_version
-            """)
-            result = cur.fetchone()
-            
-            status = {
-                "database_type": "PostgreSQL",
-                "connected": True,
-                "total_records": result['total_records'],
-                "last_record": str(result['last_record']) if result['last_record'] else "Нет данных",
-                "first_record": str(result['first_record']) if result['first_record'] else "Нет данных",
-                "postgres_version": result['postgres_version'],
-                "connection_string": DATABASE_URL.replace('o88hNjd91vCsLFcpbp9ZeAWSPo5syzfI', '*****')
-            }
-        else:
-            cur.execute("""
-                SELECT 
-                    (SELECT COUNT(*) FROM measurements) as total_records,
-                    (SELECT MAX(created_at) FROM measurements) as last_record,
-                    (SELECT MIN(created_at) FROM measurements) as first_record
-            """)
-            result = cur.fetchone()
-            
-            status = {
-                "database_type": "SQLite",
-                "connected": True,
-                "total_records": result[0],
-                "last_record": result[1] if result[1] else "Нет данных",
-                "first_record": result[2] if result[2] else "Нет данных"
-            }
+        c.execute("""
+            SELECT 
+                (SELECT COUNT(*) FROM measurements) as total_records,
+                (SELECT MAX(created_at) FROM measurements) as last_record,
+                (SELECT MIN(created_at) FROM measurements) as first_record
+        """)
+        result = c.fetchone()
         
-        cur.close()
+        status = {
+            "database_type": "SQLite",
+            "connected": True,
+            "db_file": DB_PATH,
+            "file_size": os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+            "total_records": result['total_records'],
+            "last_record": result['last_record'] if result['last_record'] else "Нет данных",
+            "first_record": result['first_record'] if result['first_record'] else "Нет данных"
+        }
+        
         conn.close()
         
         return jsonify(status)
         
     except Exception as e:
         return jsonify({
-            "database_type": "Ошибка",
+            "database_type": "SQLite (ошибка)",
             "connected": False,
             "error": str(e)
         })
 
+@app.route('/admin/backup')
+def backup_database():
+    """Скачать резервную копию базы"""
+    if not os.path.exists(DB_PATH):
+        return "База данных не найдена", 404
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        DB_PATH,
+        as_attachment=True,
+        download_name=f'glucose_backup_{timestamp}.db'
+    )
+
 if __name__ == '__main__':
     print("=" * 60)
     print("🚀 GLIKOSA Tracker запущен!")
-    print(f"📊 База данных: PostgreSQL")
-    print(f"🔗 Подключение: {DATABASE_URL.replace('o88hNjd91vCsLFcpbp9ZeAWSPo5syzfI', '*****')}")
+    print(f"📊 База данных: SQLite")
+    print(f"📁 Файл базы: {DB_PATH}")
     print("=" * 60)
     
     port = int(os.environ.get('PORT', 5000))
