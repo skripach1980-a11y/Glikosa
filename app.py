@@ -23,8 +23,264 @@ CHAT_ID = "2108365479"
 
 # Используем SQLite в постоянной папке
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glucose.db')
-print(f"✅ Используем БД: {DB_PATH}")
 
+# ============ АВТОМАТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ ИЗ TELEGRAM ============
+def auto_restore_from_telegram():
+    """Автоматически восстановить базу из Telegram при старте"""
+    try:
+        print("🔄 Проверяю базу данных...")
+        
+        # Если база уже есть и не пустая - пропускаем
+        if os.path.exists(DB_PATH):
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            try:
+                c.execute("SELECT COUNT(*) FROM measurements")
+                count = c.fetchone()[0]
+                conn.close()
+                if count > 0:
+                    print(f"✅ База уже есть, записей: {count}")
+                    return False
+            except:
+                conn.close()
+        
+        print("🔍 Ищу бэкап в Telegram...")
+        
+        # Получаем последние сообщения
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=10"
+        response = requests.get(url, timeout=10)
+        
+        if not response.json().get('ok'):
+            print("⚠️ Не могу подключиться к Telegram")
+            return False
+        
+        # Ищем JSON бэкап
+        json_file_id = None
+        for update in reversed(response.json()['result']):
+            if 'message' in update and 'document' in update['message']:
+                doc = update['message']['document']
+                if doc['file_name'].endswith('.json'):
+                    json_file_id = doc['file_id']
+                    print(f"📦 Найден бэкап: {doc['file_name']}")
+                    break
+        
+        if not json_file_id:
+            print("⚠️ Бэкап не найден")
+            return False
+        
+        # Получаем файл
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={json_file_id}"
+        response = requests.get(url)
+        file_info = response.json()
+        
+        if not file_info['ok']:
+            print("⚠️ Не могу получить файл")
+            return False
+        
+        # Скачиваем и восстанавливаем
+        print("⬇️ Скачиваю бэкап...")
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info['result']['file_path']}"
+        response = requests.get(file_url)
+        data = json.loads(response.text)
+        
+        print(f"📊 Восстанавливаю {len(data)} записей...")
+        
+        # Создаём базу
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS measurements
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             value REAL NOT NULL,
+             note TEXT,
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        # Очищаем и вставляем
+        c.execute("DELETE FROM measurements")
+        
+        for item in data:
+            c.execute(
+                "INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)",
+                (item['value'], item['note'], item.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            )
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ Восстановлено {len(data)} записей!")
+        
+        # Отправляем уведомление
+        try:
+            message = f"🔄 *Автовосстановление базы*\n\n"
+            message += f"📊 Записей восстановлено: {len(data)}\n"
+            if data:
+                first_date = data[0].get('created_at', '')[:10]
+                last_date = data[-1].get('created_at', '')[:10]
+                if first_date and last_date:
+                    message += f"📅 Период: {first_date} — {last_date}\n"
+            message += f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': CHAT_ID,
+                'text': message,
+                'parse_mode': 'Markdown'
+            }
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass
+        
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка автовосстановления: {e}")
+        return False
+
+# ============ РУЧНАЯ ЗАГРУЗКА БЭКАПА ============
+@app.route('/admin/upload_backup', methods=['GET', 'POST'])
+def upload_backup():
+    """Загрузить бэкап вручную"""
+    if request.method == 'GET':
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>📤 Загрузить бэкап</title>
+            <style>
+                body { font-family: Arial; padding: 20px; text-align: center; }
+                .card { background: #f8f9fa; padding: 25px; border-radius: 10px; margin: 20px auto; max-width: 600px; }
+                .btn { 
+                    background: #3498db; 
+                    color: white; 
+                    padding: 12px 24px; 
+                    border: none; 
+                    border-radius: 6px; 
+                    cursor: pointer; 
+                    margin: 10px;
+                    text-decoration: none;
+                    display: inline-block;
+                }
+                .btn-success { background: #2ecc71; }
+                .btn-danger { background: #e74c3c; }
+                input[type="file"] { 
+                    padding: 15px; 
+                    margin: 20px 0; 
+                    border: 2px dashed #3498db; 
+                    border-radius: 5px; 
+                    width: 90%;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>📤 Загрузка бэкапа</h1>
+            
+            <div class="card">
+                <h3>📱 Из Telegram:</h3>
+                <ol>
+                    <li>Открой Telegram</li>
+                    <li>Найди файл от бота (glucose_backup_*.db или .json)</li>
+                    <li>Скачай файл</li>
+                    <li>Загрузи здесь:</li>
+                </ol>
+                
+                <form method="post" enctype="multipart/form-data">
+                    <input type="file" name="backup_file" accept=".db,.json" required>
+                    <br>
+                    <button type="submit" class="btn btn-success">📤 Загрузить</button>
+                    <a href="/" class="btn">🏠 На главную</a>
+                </form>
+            </div>
+            
+            <div class="card" style="background: #fff3cd;">
+                <h3>⚠️ Внимание!</h3>
+                <p><strong>.db файл</strong> - полностью заменит текущую базу</p>
+                <p><strong>.json файл</strong> - добавит данные к существующим</p>
+                <a href="/admin/setup_test_data" class="btn btn-danger">🗑️ Начать с чистой базы</a>
+            </div>
+        </body>
+        </html>
+        '''
+    
+    # Обработка загрузки
+    if 'backup_file' not in request.files:
+        return '❌ Нет файла', 400
+    
+    file = request.files['backup_file']
+    if file.filename == '':
+        return '❌ Файл не выбран', 400
+    
+    try:
+        filename = file.filename.lower()
+        
+        # .db файл - полная замена базы
+        if filename.endswith('.db'):
+            file.save(DB_PATH)
+            
+            # Проверяем
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM measurements")
+            count = c.fetchone()[0]
+            conn.close()
+            
+            return f'''
+            <div style="text-align: center; padding: 40px;">
+                <h1 style="color: #27ae60;">✅ База восстановлена!</h1>
+                <p style="font-size: 18px;">Записей: <strong>{count}</strong></p>
+                <div style="margin: 30px;">
+                    <a href="/print_report" class="btn btn-success">📊 Отчет</a>
+                    <a href="/" class="btn">➕ Добавить данные</a>
+                </div>
+            </div>
+            '''
+        
+        # .json файл - восстановление данных
+        elif filename.endswith('.json'):
+            data = json.load(file)
+            
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Очищаем и вставляем
+            c.execute("DELETE FROM measurements")
+            
+            for item in data:
+                c.execute(
+                    "INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)",
+                    (item['value'], item['note'], item.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                )
+            
+            conn.commit()
+            conn.close()
+            
+            return f'''
+            <div style="text-align: center; padding: 40px;">
+                <h1 style="color: #27ae60;">✅ Данные восстановлены!</h1>
+                <p style="font-size: 18px;">Добавлено: <strong>{len(data)}</strong> записей</p>
+                <div style="margin: 30px;">
+                    <a href="/print_report" class="btn btn-success">📊 Отчет</a>
+                    <a href="/" class="btn">➕ Добавить данные</a>
+                </div>
+            </div>
+            '''
+        
+        else:
+            return '''
+            <h1 style="color: #e74c3c;">❌ Неверный формат</h1>
+            <p>Только .db или .json</p>
+            <p><a href="/admin/upload_backup">← Назад</a></p>
+            '''
+            
+    except Exception as e:
+        return f'''
+        <h1 style="color: #e74c3c;">❌ Ошибка</h1>
+        <pre>{str(e)}</pre>
+        <p><a href="/admin/upload_backup">← Попробовать снова</a></p>
+        '''
+
+# ============ ИНИЦИАЛИЗАЦИЯ БАЗЫ ============
 def init_db():
     """Инициализация базы данных"""
     try:
@@ -58,13 +314,24 @@ def init_db():
 def get_db_connection():
     """Получить подключение к SQLite"""
     conn = sqlite3.connect(DB_PATH)
-    # Включаем поддержку словарей
     conn.row_factory = sqlite3.Row
     return conn
 
-# Инициализация при старте
+# ============ ЗАПУСК И АВТОВОССТАНОВЛЕНИЕ ============
+print("=" * 60)
+print("🚀 GLIKOSA Tracker запускается...")
+print("=" * 60)
+
+# Пытаемся восстановить из Telegram
+if auto_restore_from_telegram():
+    print("✅ Данные восстановлены из Telegram")
+else:
+    print("📝 Используем существующую/новую базу")
+
+# Инициализируем базу
 init_db()
 
+# ============ ОСНОВНЫЕ МАРШРУТЫ ============
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -99,7 +366,8 @@ def health_check():
             "db_exists": os.path.exists(DB_PATH),
             "records_count": count,
             "python_version": os.sys.version,
-            "telegram_bot": "configured" if BOT_TOKEN else "not_configured"
+            "telegram_bot": "configured",
+            "auto_restore": "enabled"
         })
     except Exception as e:
         return jsonify({
@@ -624,14 +892,6 @@ def backup_to_telegram():
                     font-size: 16px;
                 }
                 .telegram { background: #0088cc; }
-                .stats { 
-                    background: #f8f9fa; 
-                    padding: 20px; 
-                    border-radius: 10px; 
-                    margin: 20px auto; 
-                    max-width: 500px; 
-                    text-align: left;
-                }
             </style>
         </head>
         <body>
@@ -728,7 +988,8 @@ def db_status():
             "total_records": result['total_records'],
             "last_record": result['last_record'] if result['last_record'] else "Нет данных",
             "first_record": result['first_record'] if result['first_record'] else "Нет данных",
-            "telegram_bot": "настроен" if BOT_TOKEN and CHAT_ID else "не настроен"
+            "telegram_bot": "настроен",
+            "auto_restore": "включено"
         }
         
         conn.close()
@@ -861,7 +1122,7 @@ def auto_backup_daily():
             print(f"⚠️ Ошибка в авто-бэкапе: {e}")
             time.sleep(300)
 
-# Запускаем авто-бэкап в отдельном потоке
+# Запуск приложения
 if __name__ == '__main__':
     # Запускаем авто-бэкап
     backup_thread = threading.Thread(target=auto_backup_daily, daemon=True)
@@ -870,8 +1131,9 @@ if __name__ == '__main__':
     print("=" * 60)
     print("🚀 GLIKOSA Tracker запущен!")
     print(f"📊 База данных: SQLite ({DB_PATH})")
-    print(f"🤖 Telegram бот: настроен (chat_id: {CHAT_ID})")
-    print("⏰ Авто-бэкап: каждый день в 21:00")
+    print(f"🤖 Telegram бот: настроен")
+    print(f"🔄 Автовосстановление: включено")
+    print(f"⏰ Авто-бэкап: 21:00 ежедневно")
     print("=" * 60)
     
     port = int(os.environ.get('PORT', 5000))
