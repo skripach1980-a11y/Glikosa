@@ -1102,7 +1102,7 @@ def auto_backup_daily():
             now = datetime.now()
             
             # Проверяем время каждый час
-            if now.hour == 21 and now.minute == 0:
+            if now.hour == 21 and now.minute == 59:
                 print(f"⏰ {now.strftime('%H:%M')} - Отправляю ежедневный бэкап...")
                 
                 try:
