@@ -448,6 +448,8 @@ def simple_backup():
                 <a href="/admin/backup_to_telegram" class="btn btn-telegram">🤖 Telegram бэкап</a>
                 <a href="/admin/upload_backup" class="btn btn-restore">📱 Загрузить с телефона</a>
                 <a href="/admin/backup_list" class="btn btn-restore">📋 Бэкапы Telegram</a>
+                <a href="/admin/merge_backups" class="btn" style="background:#9b59b6;color:white;">🔗 Объединить бэкапы</a>
+                <a href="/admin/clean_old" class="btn" style="background:#e74c3c;color:white;">🗑️ Оставить 1000 новых</a>
 
             </div>
             <div class="card">
@@ -699,6 +701,114 @@ def upload_backup():
             return f'<div style="text-align:center;padding:50px;"><h1 style="color:#27ae60;">✅ ДАННЫЕ ВОССТАНОВЛЕНЫ!</h1><p>📊 Загружено: <strong>{len(data)}</strong></p><a href="/print_report" class="btn">📊 Отчет</a></div>'
     except Exception as e:
         return f'❌ Ошибка: {e}<br><a href="/admin/upload_backup">← Назад</a>'
+
+@app.route('/admin/merge_backups', methods=['GET', 'POST'])
+def merge_backups():
+    """🔗 ОБЪЕДИНЕНИЕ МНОЖЕСТВЕННЫХ БЭКАПОВ"""
+    if request.method == 'GET':
+        return f'''
+        <!DOCTYPE html>
+        <html><head><title>🔗 Объединить бэкапы</title>
+        <style>body{{font-family:Arial;padding:30px;background:#f8f9fa;}}
+        .card{{background:white;padding:30px;border-radius:15px;max-width:500px;margin:20px auto;box-shadow:0 8px 25px rgba(0,0,0,0.1);}}
+        input[type=file]{{padding:20px;border:3px dashed #3498db;border-radius:10px;width:90%;margin:20px 0;}}
+        .btn{{background:#9b59b6;color:white;padding:15px 30px;border:none;border-radius:10px;font-size:18px;cursor:pointer;margin:10px;display:inline-block;text-decoration:none;}}
+        </style></head><body>
+        <div class="card">
+            <h1>🔗 Объединить бэкапы</h1>
+            <p>📱 Выберите несколько .json файлов:</p>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="backup_files" accept=".json" multiple required>
+                <br><button type="submit" class="btn">🔗 ОБЪЕДИНИТЬ</button>
+                <a href="/admin/simple_backup" class="btn" style="background:#95a5a6;">🔙 Бэкапы</a>
+            </form>
+            <div style="margin-top:30px;color:#7f8c8d;">
+                <p>📊 Уникальные записи | Дубликаты удаляются | Сортировка по дате</p>
+            </div>
+        </div></body></html>'''
+    
+    if 'backup_files' not in request.files:
+        return '❌ Выберите файлы', 400
+    
+    files = request.files.getlist('backup_files')
+    all_data = []
+    
+    # Собираем ВСЕ данные из файлов
+    for file in files:
+        if file.filename.endswith('.json'):
+            data = json.load(file)
+            all_data.extend(data)
+    
+    if not all_data:
+        return '❌ Нет данных в файлах', 400
+    
+    # УДАЛЯЕМ ДУБЛИКАТЫ (по value + created_at)
+    unique_data = []
+    seen = set()
+    for item in all_data:
+        key = f"{item['value']:.1f}_{item.get('created_at', '')}"
+        if key not in seen:
+            seen.add(key)
+            unique_data.append(item)
+    
+    # Сортируем по дате
+    unique_data.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    
+    # Сохраняем в базу
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM measurements")
+    
+    for item in unique_data:
+        c.execute("INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)",
+                 (item['value'], item.get('note', ''), item.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))))
+    
+    conn.commit()
+    conn.close()
+    
+    return f'''
+    <div style="text-align:center;padding:50px;">
+        <h1 style="color:#9b59b6;font-size:36px;">✅ БЭКАПЫ ОБЪЕДИНЕНЫ!</h1>
+        <p style="font-size:24px;">
+            📊 Загружено: <strong>{len(unique_data)}</strong> уникальных записей<br>
+            🗑️  Удалено дублей: <strong>{len(all_data) - len(unique_data)}</strong>
+        </p>
+        <a href="/print_report" class="btn">📊 Отчет</a>
+        <a href="/" class="btn" style="background:#3498db;">➕ Добавить</a>
+    </div>'''
+@app.route('/admin/clean_old')
+def clean_old_records():
+    """🗑️ ОСТАВИТЬ ТОЛЬКО ПОСЛЕДНИЕ 1000 записей"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Удаляем всё КРОМЕ последних 1000
+    c.execute("""
+        DELETE FROM measurements 
+        WHERE id NOT IN (
+            SELECT id FROM measurements 
+            ORDER BY created_at DESC 
+            LIMIT 1000
+        )
+    """)
+    
+    deleted = c.rowcount
+    c.execute("SELECT COUNT(*) FROM measurements")
+    remains = c.fetchone()[0]
+    
+    conn.commit()
+    conn.close()
+    
+    return f'''
+    <div style="text-align:center;padding:50px;">
+        <h1 style="color:#e74c3c;">🗑️ ОЧИСТКА ЗАВЕРШЕНА</h1>
+        <p style="font-size:24px;">
+            ✅ Осталось записей: <strong>{remains}</strong><br>
+            🗑️  Удалено старых: <strong>{deleted}</strong>
+        </p>
+        <a href="/print_report" class="btn" style="background:#2ecc71;">📊 Проверить отчет</a>
+        <a href="/admin/simple_backup" class="btn">🔙 Бэкапы</a>
+    </div>'''
 
 # ============ (СТАРЫЙ КОД ПРОДОЛЖАЕТСЯ) ============
 
