@@ -170,9 +170,26 @@ def init_db():
     print(f"✅ База готова: {DB_PATH}")
 
 def get_db_connection():
+    """Подключение с авто-созданием таблицы"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    
+    # АВТО-СОЗДАНИЕ если нет таблицы
+    c = conn.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='measurements'")
+    if not c.fetchone():
+        print("🔄 Создаю таблицу measurements...")
+        c.execute('''
+            CREATE TABLE measurements
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             value REAL NOT NULL,
+             note TEXT,
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        conn.commit()
+    
     return conn
+
 
 # ============ ОСНОВНЫЕ МАРШРУТЫ ============
 @app.route('/')
