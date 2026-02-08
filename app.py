@@ -818,9 +818,77 @@ def backup_database():
         return "База не найдена", 404
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return send_file(DB_PATH, as_attachment=True, download_name=f'glucose_backup_{timestamp}.db')
+# ============ АВТОМАТИЧЕСКИЙ БЭКАП КАЖДЫЕ 24 ЧАСА ============
+def auto_backup_20days():
+    """🤖 Авто-бэкап 20 дней каждые 24 часа"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Последняя запись
+        c.execute("SELECT value, created_at FROM measurements ORDER BY created_at DESC LIMIT 1")
+        last_record = c.fetchone()
+        if not last_record:
+            return
+        
+        last_value = last_record[0]
+        last_date = last_record[1][:10]
+        
+        # Данные за 20 дней
+        twenty_days_ago = (datetime.now() - timedelta(days=20)).strftime('%Y-%m-%d')
+        c.execute("SELECT COUNT(*) FROM measurements WHERE created_at >= ?", (twenty_days_ago,))
+        count_20days = c.fetchone()[0]
+        
+        if count_20days == 0:
+            return
+        
+        # Имя файла
+        filename = f"glucose_20days_{last_value:.1f}mmol_{last_date}.json"
+        
+        # Берем данные
+        c.execute("""
+            SELECT * FROM measurements 
+            WHERE created_at >= ? ORDER BY created_at DESC
+        """, (twenty_days_ago,))
+        data = []
+        for row in c.fetchall():
+            data.append({'id': row[0], 'value': row[1], 'note': row[2], 'created_at': row[3]})
+        
+        conn.close()
+        
+        # Отправляем в Telegram
+        message = f"🤖 *АВТО-БЭКАП 20 дней*\\n📊 Записей: {count_20days}\\n🎯 Последнее: {last_value:.1f} ({last_date})"
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'
+        })
+        
+        files = {'document': (filename, json.dumps(data, ensure_ascii=False, indent=2, default=str).encode('utf-8'), 'application/json')}
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", files=files, data={
+            'chat_id': CHAT_ID, 'caption': f'🤖 AUTO {filename} ({count_20days} записей)'
+        })
+        
+        print(f"✅ АВТО-БЭКАП 20дней: {count_20days} записей")
+        
+    except Exception as e:
+        print(f"⚠️ Авто-бэкап ошибка: {e}")
+
+# Запуск автобэкапа каждые 24 часа
+def start_auto_backup():
+    def run():
+        while True:
+            auto_backup_20days()
+            time.sleep(24 * 60 * 60)  # 24 часа
+    
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    print("✅ АВТО-БЭКАП 20дней запущен!")
 
 # ============ ЗАПУСК ============
 if __name__ == '__main__':
+    init_db()
+    start_auto_backup()  # ← АВТО-БЭКАП ВКЛЮЧЕН!
+    app.run(debug=False, host='0.0.0.0', port=5000)
+
     print("=" * 60)
     print("🚀 GLIKOSA Tracker")
     print("✅ Авто-бэкап: после каждой записи")
