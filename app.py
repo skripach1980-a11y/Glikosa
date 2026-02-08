@@ -446,7 +446,9 @@ def simple_backup():
             <div class="card">
                 <h3>🚀 Быстрые действия</h3>
                 <a href="/admin/backup_to_telegram" class="btn btn-telegram">🤖 Telegram бэкап</a>
-                <a href="/admin/backup_list" class="btn btn-restore">📋 Выбрать бэкап</a>
+                <a href="/admin/upload_backup" class="btn btn-restore">📱 Загрузить с телефона</a>
+                <a href="/admin/backup_list" class="btn btn-restore">📋 Бэкапы Telegram</a>
+
             </div>
             <div class="card">
                 <h3>📥 Скачать</h3>
@@ -643,6 +645,62 @@ def backup_to_telegram():
         '''
     except Exception as e:
         return f'<h1>❌ Ошибка</h1><pre>{e}</pre>'
+# ============ ЗАГРУЗКА БЭКАПА С ТЕЛЕФОНА ============
+@app.route('/admin/upload_backup', methods=['GET', 'POST'])
+def upload_backup():
+    """📱 Загрузка файла с телефона"""
+    if request.method == 'GET':
+        return f'''
+        <!DOCTYPE html>
+        <html><head><title>📤 Загрузить бэкап</title>
+        <style>body{{font-family:Arial;padding:30px;background:#f8f9fa;text-align:center;}}
+        .card{{background:white;padding:30px;border-radius:15px;max-width:500px;margin:20px auto;box-shadow:0 8px 25px rgba(0,0,0,0.1);}}
+        input[type=file]{{padding:20px;border:3px dashed #3498db;border-radius:10px;width:90%;margin:20px 0;}}
+        .btn{{background:#2ecc71;color:white;padding:15px 30px;border:none;border-radius:10px;font-size:18px;cursor:pointer;margin:10px;display:inline-block;text-decoration:none;}}
+        </style></head><body>
+        <div class="card">
+            <h1>📤 Загрузить с телефона</h1>
+            <form method="post" enctype="multipart/form-data">
+                <input type="file" name="backup_file" accept=".db,.json" required>
+                <br><button type="submit" class="btn">🚀 Загрузить</button>
+                <a href="/admin/simple_backup" class="btn" style="background:#95a5a6;">🔙 Бэкапы</a>
+            </form>
+            <div style="margin-top:30px;color:#7f8c8d;">
+                <p>📄 .db = замена базы | 📋 .json = данные</p>
+            </div>
+        </div></body></html>'''
+    
+    if 'backup_file' not in request.files:
+        return '❌ Нет файла', 400
+    file = request.files['backup_file']
+    if not file.filename:
+        return '❌ Выберите файл', 400
+    
+    try:
+        filename = file.filename.lower()
+        if filename.endswith('.db'):
+            file.save(DB_PATH)
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM measurements")
+            count = c.fetchone()[0]
+            conn.close()
+            return f'<div style="text-align:center;padding:50px;"><h1 style="color:#27ae60;">✅ БАЗА ЗАГРУЖЕНА!</h1><p>📊 Записей: <strong>{count}</strong></p><a href="/print_report" class="btn">📊 Отчет</a><a href="/" class="btn" style="background:#3498db;">➕ Добавить</a></div>'
+        elif filename.endswith('.json'):
+            data = json.load(file)
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("DELETE FROM measurements")
+            for item in data:
+                c.execute("INSERT INTO measurements (value, note, created_at) VALUES (?, ?, ?)",
+                         (item['value'], item.get('note', ''), item.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))))
+            conn.commit()
+            conn.close()
+            return f'<div style="text-align:center;padding:50px;"><h1 style="color:#27ae60;">✅ ДАННЫЕ ВОССТАНОВЛЕНЫ!</h1><p>📊 Загружено: <strong>{len(data)}</strong></p><a href="/print_report" class="btn">📊 Отчет</a></div>'
+    except Exception as e:
+        return f'❌ Ошибка: {e}<br><a href="/admin/upload_backup">← Назад</a>'
+
+# ============ (СТАРЫЙ КОД ПРОДОЛЖАЕТСЯ) ============
 
 @app.route('/admin/backup')
 def backup_database():
