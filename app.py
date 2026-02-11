@@ -399,13 +399,20 @@ def simple_backup():
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) as count FROM measurements")
-        count = c.fetchone()['count']
+        
+        # Запрос количества записей
+        c.execute("SELECT COUNT(*) FROM measurements")
+        # ИСПРАВЛЕНИЕ: Берем данные по индексу [0], это работает всегда
+        # (обращение по имени ['count'] часто вызывает ошибку, если настройки БД отличаются)
+        result = c.fetchone()
+        count = result[0] if result else 0
+        
         conn.close()
         
         return f'''
         <!DOCTYPE html>
         <html><head><title>💾 Бэкапы</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
         body {{font-family:Arial;padding:20px;background:#f8f9fa;}}
         .container {{max-width:600px;margin:0 auto;}}
@@ -433,7 +440,6 @@ def simple_backup():
                 <a href="/admin/backup_list" class="btn btn-restore">📋 Бэкапы Telegram</a>
                 <a href="/admin/merge_backups" class="btn" style="background:#9b59b6;color:white;">🔗 Объединить бэкапы</a>
                 <a href="/admin/clean_old" class="btn" style="background:#e74c3c;color:white;">🗑️ Оставить 1000 новых</a>
-
             </div>
             <div class="card">
                 <h3>📥 Скачать</h3>
@@ -446,8 +452,10 @@ def simple_backup():
             </div>
         </div></body></html>
         '''
-    except:
-        return "Ошибка"
+    except Exception as e:
+        # ИСПРАВЛЕНИЕ: Теперь мы увидим реальный текст ошибки, а не просто слово "Ошибка"
+        return f'<div style="text-align:center; padding:50px;"><h1 style="color:red;">⚠️ ОШИБКА</h1><p>{e}</p><a href="/">На главную</a></div>'
+
 
 @app.route('/admin/backup_list')
 def backup_list():
