@@ -52,10 +52,34 @@ def init_db():
     print(f"✅ База готова: {DB_PATH}")
 
 def get_db_connection():
-    """Подключение с авто-созданием таблицы"""
+    """Подключение с АВТО-СОЗДАНИЕМ таблиц, если их нет"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    
+    # === МАГИЯ ЗДЕСЬ: ПРОВЕРЯЕМ И СОЗДАЕМ ТАБЛИЦЫ СРАЗУ ===
+    c = conn.cursor()
+    
+    # 1. Создаем таблицу измерений
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS measurements
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         value REAL NOT NULL,
+         note TEXT,
+         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+    ''')
+    
+    # 2. Создаем таблицу истории бэкапов
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS backup_history
+        (id INTEGER PRIMARY KEY AUTOINCREMENT,
+         backup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+    ''')
+    
+    conn.commit()
+    # ======================================================
+    
     return conn
+
 
 # ============ НОВАЯ ФУНКЦИЯ БЭКАПА 7 ДНЕЙ ============
 def perform_7day_backup():
