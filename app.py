@@ -27,11 +27,9 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glucose.db')
 
 # ============ ИНИЦИАЛИЗАЦИЯ БАЗЫ ============
 def init_db():
-    """Создает таблицы. Добавлена таблица логов бэкапа."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
-    # Таблица измерений
+    # Основная таблица
     c.execute('''
         CREATE TABLE IF NOT EXISTS measurements
         (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,38 +39,38 @@ def init_db():
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON measurements(created_at)')
     
-    # Таблица истории бэкапов (для проверки даты)
+    # === НОВОЕ: Таблица для запоминания даты бэкапа ===
     c.execute('''
-        CREATE TABLE IF NOT EXISTS backup_logs
+        CREATE TABLE IF NOT EXISTS backup_history
         (id INTEGER PRIMARY KEY AUTOINCREMENT,
-         executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-         status TEXT)
+         backup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
     ''')
+    # =================================================
     
     conn.commit()
     conn.close()
-    print(f"✅ База данных готова: {DB_PATH}")
+    print(f"✅ База готова: {DB_PATH}")
 
 def get_db_connection():
-    """Подключение к БД"""
+    """Подключение с авто-созданием таблицы"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-# ============ ЛОГИКА УМНОГО БЭКАПА ============
-def perform_full_backup():
-    """Выполняет бэкап и записывает дату в backup_logs"""
+# ============ НОВАЯ ФУНКЦИЯ БЭКАПА 7 ДНЕЙ ============
+def perform_7day_backup():
+    """Делает бэкап и записывает дату в историю"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) as count FROM measurements")
+        c.execute("SELECT COUNT(*) FROM measurements")
         count = c.fetchone()[0]
         
         if count == 0:
             conn.close()
             return
 
-        # 1. Собираем данные
+        # Берем все записи
         c.execute('SELECT * FROM measurements ORDER BY created_at DESC')
         data = []
         for row in c.fetchall():
@@ -83,88 +81,87 @@ def perform_full_backup():
                 'created_at': row[3]
             })
         
-        # 2. Отправляем в Telegram
-        timestamp = datetime.now().strftime('%Y-%m-%d')
-        filename_json = f"backup_7days_{timestamp}.json"
+        # Записываем факт бэкапа в историю
+        c.execute("INSERT INTO backup_history (backup_date) VALUES (?)", (datetime.now(),))
+        conn.commit()
+        conn.close()
         
-        message = f"📅 *Еженедельный бэкап*\\\\n📊 Всего записей: {count}\\\\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        # Отправляем в Telegram
+        timestamp = datetime.now().strftime('%Y-%m-%d')
+        filename = f"backup_7days_{timestamp}.json"
+        
+        message = f"💾 *Авто-бэкап (7 дней)*\\\\n📊 Записей: {count}\\\\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
             'chat_id': CHAT_ID,
             'text': message,
             'parse_mode': 'Markdown'
-        })
+        }, timeout=10)
         
-        files = {'document': (filename_json, json.dumps(data, ensure_ascii=False, indent=2, default=str).encode('utf-8'), 'application/json')}
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", files=files, data={
-            'chat_id': CHAT_ID, 'caption': f'💾 Auto Backup {timestamp}'
-        })
+        # Отправляем файл
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        json.dump(data, temp_file, ensure_ascii=False, indent=2, default=str)
+        temp_file.close()
         
-        # 3. ЗАПИСЫВАЕМ ФАКТ БЭКАПА В БАЗУ
-        c.execute("INSERT INTO backup_logs (executed_at, status) VALUES (?, ?)", 
-                 (datetime.now(), 'success'))
-        conn.commit()
-        conn.close()
+        with open(temp_file.name, 'rb') as f:
+            files = {'document': f}
+            data_tg = {'chat_id': CHAT_ID, 'caption': f'💾 7 Days Backup ({count} records)'}
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", files=files, data=data_tg, timeout=20)
         
-        print(f"✅ Еженедельный бэкап выполнен успешно!")
+        os.unlink(temp_file.name)
+        print(f"✅ Бэкап 7 дней выполнен успешно")
         
     except Exception as e:
         print(f"⚠️ Ошибка выполнения бэкапа: {e}")
 
-def check_and_run_backup():
-    """Проверяет дату последнего бэкапа в БД"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Берем дату последнего успешного бэкапа
-        c.execute("SELECT executed_at FROM backup_logs ORDER BY executed_at DESC LIMIT 1")
-        row = c.fetchone()
-        conn.close()
-        
-        run_needed = False
-        
-        if not row:
-            print("🕒 Бэкапов еще не было. Запускаю первый...")
-            run_needed = True
-        else:
-            last_date_str = row[0]
-            # Преобразуем строку времени (SQLite хранит как строку) в объект
-            try:
-                last_date = datetime.strptime(last_date_str, '%Y-%m-%d %H:%M:%S.%f')
-            except ValueError:
-                # Если формат без микросекунд
-                last_date = datetime.strptime(last_date_str, '%Y-%m-%d %H:%M:%S')
-                
-            days_diff = (datetime.now() - last_date).days
-            
-            if days_diff >= 7:
-                print(f"🕒 Прошло {days_diff} дней с последнего бэкапа. Запускаю...")
-                run_needed = True
-            else:
-                print(f"⏳ Последний бэкап был {days_diff} дн. назад. Ждем...")
-        
-        if run_needed:
-            perform_full_backup()
-            
-    except Exception as e:
-        print(f"⚠️ Ошибка проверки планировщика: {e}")
-
-def start_smart_scheduler():
-    """Запускает цикл проверки раз в час"""
+def smart_scheduler_7days():
+    """Проверяет дату последнего бэкапа в БД и запускает если прошло 7 дней"""
     def run():
-        # Первая проверка сразу при старте (через 10 сек, чтобы Flask успел запуститься)
+        # Даем серверу запуститься
         time.sleep(10)
-        check_and_run_backup()
         
         while True:
-            # Проверяем каждый час (3600 сек)
-            # Это надежнее, чем спать 7 дней, так как скрипт может перезагрузиться
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                
+                # Проверяем когда был последний бэкап
+                c.execute("SELECT backup_date FROM backup_history ORDER BY id DESC LIMIT 1")
+                last_record = c.fetchone()
+                conn.close()
+                
+                do_backup = False
+                
+                if not last_record:
+                    print("🕒 История бэкапов пуста. Делаю первый...")
+                    do_backup = True
+                else:
+                    last_date_str = last_record[0]
+                    # Парсим дату (SQLite хранит как строку)
+                    try:
+                        last_date = datetime.strptime(last_date_str, '%Y-%m-%d %H:%M:%S.%f')
+                    except:
+                        last_date = datetime.strptime(last_date_str[:19], '%Y-%m-%d %H:%M:%S')
+                    
+                    diff = datetime.now() - last_date
+                    if diff.days >= 7:
+                        print(f"🕒 Прошло {diff.days} дней. Пора делать бэкап.")
+                        do_backup = True
+                    else:
+                        print(f"⏳ Последний бэкап был {diff.days} дн. назад. Жду...")
+                
+                if do_backup:
+                    perform_7day_backup()
+            
+            except Exception as e:
+                print(f"Ошибка планировщика: {e}")
+            
+            # Проверяем раз в час (3600 сек)
             time.sleep(3600)
-            check_and_run_backup()
-    
+
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    print("✅ Планировщик бэкапов запущен (проверка базы каждый час)")
+    print("✅ Планировщик (7 дней) запущен")
+
 
 # ============ ОСНОВНЫЕ МАРШРУТЫ ============
 @app.route('/')
@@ -191,17 +188,20 @@ def health_check():
         c.execute("SELECT COUNT(*) FROM measurements")
         count = c.fetchone()[0]
         
-        # Информация о последнем бэкапе для статуса
-        c.execute("SELECT executed_at FROM backup_logs ORDER BY executed_at DESC LIMIT 1")
-        last_backup = c.fetchone()
-        last_backup_str = last_backup[0] if last_backup else "Never"
-        
+        # Получаем дату последнего бэкапа для статуса
+        try:
+            c.execute("SELECT backup_date FROM backup_history ORDER BY id DESC LIMIT 1")
+            last = c.fetchone()
+            last_backup = last[0] if last else "Нет записей"
+        except:
+            last_backup = "Ошибка чтения"
+            
         conn.close()
         return jsonify({
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "records_count": count,
-            "last_backup": last_backup_str
+            "last_backup_check": last_backup
         })
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
@@ -224,19 +224,23 @@ def add_measurement():
         inserted_id = c.lastrowid
         conn.close()
         
-        # Telegram уведомление (просто инфо, не бэкап)
+        # === УБРАН АВТО-БЭКАП, ОСТАВЛЕНО ТОЛЬКО УВЕДОМЛЕНИЕ ===
         try:
             message = f"📝 *Новая запись*\\\\n📊 {value} mmol/L"
             if note: message += f"\\\\n📝 {note}"
             message += f"\\\\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
             
+            # Отправляем в отдельном потоке, чтобы не тормозить
             def send_notify():
                 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                    'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'Markdown'
+                    'chat_id': CHAT_ID,
+                    'text': message,
+                    'parse_mode': 'Markdown'
                 }, timeout=5)
             threading.Thread(target=send_notify, daemon=True).start()
         except:
             pass
+        # ======================================================
         
         return jsonify({
             'message': '✅ Сохранено!',
@@ -397,12 +401,6 @@ def simple_backup():
         c = conn.cursor()
         c.execute("SELECT COUNT(*) as count FROM measurements")
         count = c.fetchone()['count']
-        
-        # Дата последнего бэкапа
-        c.execute("SELECT executed_at FROM backup_logs ORDER BY executed_at DESC LIMIT 1")
-        last_backup = c.fetchone()
-        last_backup_str = last_backup[0][:16] if last_backup else "Никогда"
-        
         conn.close()
         
         return f'''
@@ -427,11 +425,10 @@ def simple_backup():
             <div class="stats">
                 <h2>📊 Записей: <strong>{count}</strong></h2>
                 <p>✅ Авто-бэкап каждые <strong>7 дней</strong></p>
-                <p>🕒 Последний: <strong>{last_backup_str}</strong></p>
             </div>
             <div class="card">
                 <h3>🚀 Быстрые действия</h3>
-                <a href="/admin/backup_to_telegram" class="btn btn-telegram">🤖 Бэкап в TG сейчас</a>
+                <a href="/admin/backup_to_telegram" class="btn btn-telegram">🤖 Telegram бэкап</a>
                 <a href="/admin/upload_backup" class="btn btn-restore">📱 Загрузить с телефона</a>
                 <a href="/admin/backup_list" class="btn btn-restore">📋 Бэкапы Telegram</a>
                 <a href="/admin/merge_backups" class="btn" style="background:#9b59b6;color:white;">🔗 Объединить бэкапы</a>
@@ -578,19 +575,56 @@ def restore_specific_backup(file_id):
 
 @app.route('/admin/backup_to_telegram')
 def backup_to_telegram():
-    """Ручной запуск бэкапа"""
     try:
-        perform_full_backup() # Используем общую функцию
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) as count FROM measurements")
+        count = c.fetchone()['count']
+        
+        c.execute("SELECT MIN(datetime(created_at)), MAX(datetime(created_at)), ROUND(AVG(value), 1), MIN(value), MAX(value) FROM measurements")
+        stats = c.fetchone()
+        conn.close()
+        
+        message = f"📊 *Полный бэкап*\\\\n📅 {stats[0][:10] or ''} — {stats[1][:10] or ''}\\\\n📈 Записей: {count}\\\\n📉 Ср: {stats[2]}, Мин: {stats[3]}, Макс: {stats[4]}\\n⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            'chat_id': CHAT_ID,
+            'text': message,
+            'parse_mode': 'Markdown'
+        })
+        
+        # Отправляем DB файл
+        if count > 0 and os.path.exists(DB_PATH):
+            with open(DB_PATH, 'rb') as f:
+                files = {'document': f}
+                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", files=files, data={'chat_id': CHAT_ID}, timeout=30)
+        
+        # Отправляем JSON
+        if count > 0:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute('SELECT * FROM measurements')
+            data = [dict(row) for row in c.fetchall()]
+            conn.close()
+            
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            json.dump(data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.close()
+            
+            with open(temp_file.name, 'rb') as f:
+                files = {'document': f}
+                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument", files=files, data={'chat_id': CHAT_ID}, timeout=30)
+            os.unlink(temp_file.name)
+        
         return '''
         <div style="text-align:center;padding:40px;">
             <h1 style="color:#27ae60;">✅ Бэкап отправлен!</h1>
-            <p>Проверьте Telegram. Дата сохранена.</p>
+            <p>Проверьте Telegram</p>
             <a href="/admin/simple_backup" style="background:#3498db;color:white;padding:15px 30px;text-decoration:none;border-radius:8px;">🔄 Еще раз</a>
         </div>
         '''
     except Exception as e:
         return f'<h1>❌ Ошибка</h1><pre>{e}</pre>'
-
 # ============ ЗАГРУЗКА БЭКАПА С ТЕЛЕФОНА ============
 @app.route('/admin/upload_backup', methods=['GET', 'POST'])
 def upload_backup():
@@ -626,8 +660,6 @@ def upload_backup():
         filename = file.filename.lower()
         if filename.endswith('.db'):
             file.save(DB_PATH)
-            # При загрузке DB нужно проверить, есть ли там таблица логов
-            init_db() 
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM measurements")
@@ -722,7 +754,6 @@ def merge_backups():
         <a href="/print_report" class="btn">📊 Отчет</a>
         <a href="/" class="btn" style="background:#3498db;">➕ Добавить</a>
     </div>'''
-
 @app.route('/admin/clean_old')
 def clean_old_records():
     """🗑️ ОСТАВИТЬ ТОЛЬКО ПОСЛЕДНИЕ 1000 записей"""
@@ -766,13 +797,13 @@ def backup_database():
 
 # ============ ЗАПУСК ============
 if __name__ == '__main__':
-    init_db() # Создаст backup_logs, если нет
-    start_smart_scheduler() # Запустит проверку
+    init_db()
+    smart_scheduler_7days() # Умный планировщик
     
     print("=" * 60)
     print("🚀 GLIKOSA Tracker")
-    print("✅ База: не обнуляется")
-    print("✅ Бэкап: раз в 7 дней (устойчив к перезагрузкам)")
+    print("✅ Авто-восстановление: ОТКЛЮЧЕНО")
+    print("✅ Авто-бэкап: Каждые 7 дней (с проверкой истории)")
     print("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=False)
